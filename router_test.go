@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestFileRouter(t *testing.T) {
@@ -163,5 +164,74 @@ func TestRouterNormalize(t *testing.T) {
 		if res != tt.out {
 			t.Errorf("expected %q -> %q, got %q", tt.in, tt.out, res)
 		}
+	}
+}
+
+func TestEmbeddedFileSystemRouting(t *testing.T) {
+	memFS := fstest.MapFS{
+		"pte-routes/+page.pte": &fstest.MapFile{
+			Data: []byte("<h1>Welcome to Embedded PTE</h1>"),
+		},
+		"pte-routes/about/+page.pte": &fstest.MapFile{
+			Data: []byte("<h1>About Embedded</h1>"),
+		},
+	}
+
+	engine := NewEngine("", WithFS(memFS))
+	router, err := NewFileRouterFS(engine, memFS, "pte-routes")
+	if err != nil {
+		t.Fatalf("failed to create embedded file router: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/about", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", w.Code)
+	}
+
+	body := strings.TrimSpace(w.Body.String())
+	expected := "<h1>About Embedded</h1>"
+	if body != expected {
+		t.Errorf("expected %q, got %q", expected, body)
+	}
+}
+
+func TestHTMXRoutingSupport(t *testing.T) {
+	memFS := fstest.MapFS{
+		"pte-routes/htmx/+page.pte": &fstest.MapFile{
+			Data: []byte("|page hxTrigger='itemAdded'|\n|page hxRedirect='/cart'|\n|if page.IsHTMX|Target: |page.HXTarget||/if|"),
+		},
+	}
+
+	engine := NewEngine("", WithFS(memFS))
+	router, err := NewFileRouterFS(engine, memFS, "pte-routes")
+	if err != nil {
+		t.Fatalf("failed to create embedded file router: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/htmx", nil)
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("HX-Target", "#main-content")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	if resp.Header.Get("HX-Trigger") != "itemAdded" {
+		t.Errorf("expected HX-Trigger header 'itemAdded', got %q", resp.Header.Get("HX-Trigger"))
+	}
+	if resp.Header.Get("HX-Redirect") != "/cart" {
+		t.Errorf("expected HX-Redirect header '/cart', got %q", resp.Header.Get("HX-Redirect"))
+	}
+
+	body := strings.TrimSpace(w.Body.String())
+	expected := "Target: #main-content"
+	if body != expected {
+		t.Errorf("expected %q, got %q", expected, body)
 	}
 }

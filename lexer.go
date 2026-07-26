@@ -115,7 +115,7 @@ func (l *Lexer) Tokenize(template string) ([]Token, error) {
 func (l *Lexer) classifyToken(content string) TokenType {
 	if strings.HasPrefix(content, "if ") {
 		return TokenIf
-	} else if strings.HasPrefix(content, "else if ") || strings.HasPrefix(content, "else-if ") {
+	} else if strings.HasPrefix(content, "else if ") {
 		return TokenElseIf
 	} else if content == "else" {
 		return TokenElse
@@ -187,6 +187,18 @@ func (l *Lexer) classifyToken(content string) TokenType {
 		return TokenRecover
 	} else if content == "/attempt" {
 		return TokenEndAttempt
+	} else if content == "pwa" || strings.HasPrefix(content, "pwa ") {
+		return TokenPWA
+	} else if content == "htmx" || strings.HasPrefix(content, "htmx ") {
+		return TokenHTMX
+	} else if strings.HasPrefix(content, "htmx-get ") || strings.HasPrefix(content, "htmx-post ") || strings.HasPrefix(content, "htmx-put ") || strings.HasPrefix(content, "htmx-delete ") || strings.HasPrefix(content, "htmx-patch ") {
+		return TokenHXAttr
+	} else if content == "alpine" || strings.HasPrefix(content, "alpine ") || content == "alpinejs" || strings.HasPrefix(content, "alpinejs ") || content == "reactive" || strings.HasPrefix(content, "reactive ") {
+		return TokenAlpine
+	} else if content == "alpine-data" || strings.HasPrefix(content, "alpine-data ") {
+		return TokenState
+	} else if strings.HasPrefix(content, "alpine-") {
+		return TokenAlpineAttr
 	}
 	return TokenExpression
 }

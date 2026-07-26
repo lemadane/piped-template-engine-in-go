@@ -43,6 +43,12 @@ const (
 	TokenAttempt       TokenType = "ATTEMPT"
 	TokenRecover       TokenType = "RECOVER"
 	TokenEndAttempt    TokenType = "END_ATTEMPT"
+	TokenPWA           TokenType = "PWA"
+	TokenHTMX          TokenType = "HTMX"
+	TokenHXAttr        TokenType = "HX_ATTR"
+	TokenAlpine        TokenType = "ALPINE"
+	TokenState         TokenType = "STATE"
+	TokenAlpineAttr    TokenType = "ALPINE_ATTR"
 )
 
 type Token struct {

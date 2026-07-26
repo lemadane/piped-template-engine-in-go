@@ -139,7 +139,7 @@ func TestConditionals(t *testing.T) {
 	template := `
 |if user.role == 'admin'|
    Admin
-|else-if user.role == 'manager'|
+|else if user.role == 'manager'|
    Manager
 |else|
    User
@@ -492,5 +492,139 @@ func TestConditionalAttributeShorthandAndCleanup(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, buf.String())
 			}
 		})
+	}
+}
+
+func TestRenderFragments(t *testing.T) {
+	templates := map[string]string{
+		"page": `
+<div>
+   |fragment toast|
+      <div id="toast" hx-swap-oob="true">Saved!</div>
+   |/fragment|
+
+   |fragment cart|
+      <span id="cart-count" hx-swap-oob="true">3</span>
+   |/fragment|
+</div>`,
+	}
+
+	engine := NewEngine("", WithInMemoryTemplates(templates))
+	var buf bytes.Buffer
+	err := engine.RenderFragments(&buf, "page", []string{"toast", "cart"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error rendering fragments: %v", err)
+	}
+
+	res := strings.TrimSpace(buf.String())
+	if !strings.Contains(res, `id="toast"`) || !strings.Contains(res, `id="cart-count"`) {
+		t.Errorf("expected both OOB fragments in output, got %q", res)
+	}
+}
+
+func TestPWANode(t *testing.T) {
+	engine := NewEngine("")
+	template := `|pwa name='TaskMaster' theme='#4f46e5' icon='/icon-192.png' sw='/sw.js'|`
+
+	var buf bytes.Buffer
+	if err := engine.Render(&buf, template, nil); err != nil {
+		t.Fatalf("unexpected error rendering pwa node: %v", err)
+	}
+
+	res := buf.String()
+	if !strings.Contains(res, `meta name="theme-color" content="#4f46e5"`) {
+		t.Errorf("expected theme color tag, got %q", res)
+	}
+	if !strings.Contains(res, `apple-mobile-web-app-title" content="TaskMaster"`) {
+		t.Errorf("expected title tag, got %q", res)
+	}
+	if !strings.Contains(res, `link rel="apple-touch-icon" href="/icon-192.png"`) {
+		t.Errorf("expected icon tag, got %q", res)
+	}
+	if !strings.Contains(res, `navigator.serviceWorker.register('/sw.js')`) {
+		t.Errorf("expected service worker registration script, got %q", res)
+	}
+}
+
+func TestHTMXTags(t *testing.T) {
+	engine := NewEngine("")
+	headTemplate := `|htmx src='/js/htmx.min.js' ext='json-enc' indicator=true|`
+
+	var buf bytes.Buffer
+	if err := engine.Render(&buf, headTemplate, nil); err != nil {
+		t.Fatalf("unexpected error rendering htmx head node: %v", err)
+	}
+
+	res := buf.String()
+	if !strings.Contains(res, `script src="/js/htmx.min.js"`) {
+		t.Errorf("expected custom htmx src script tag, got %q", res)
+	}
+	if !strings.Contains(res, `dist/ext/json-enc.js`) {
+		t.Errorf("expected extension script tag, got %q", res)
+	}
+	if !strings.Contains(res, `.htmx-indicator{display:none;}`) {
+		t.Errorf("expected indicator css, got %q", res)
+	}
+
+	btnTemplate := `<button |htmx-get '/api/tasks' target='#task-list' swap='outerHTML'|>Refresh</button>`
+	buf.Reset()
+	if err := engine.Render(&buf, btnTemplate, nil); err != nil {
+		t.Fatalf("unexpected error rendering htmx-get attr node: %v", err)
+	}
+
+	btnRes := buf.String()
+	if !strings.Contains(btnRes, `hx-get="/api/tasks"`) || !strings.Contains(btnRes, `hx-target="#task-list"`) || !strings.Contains(btnRes, `hx-swap="outerHTML"`) {
+		t.Errorf("expected hx attribute shorthand rendering, got %q", btnRes)
+	}
+}
+
+func TestAlpineTags(t *testing.T) {
+	engine := NewEngine("")
+	headTemplate := `|reactive plugins='collapse,focus' cloak=true|`
+
+	var buf bytes.Buffer
+	if err := engine.Render(&buf, headTemplate, nil); err != nil {
+		t.Fatalf("unexpected error rendering reactive head node: %v", err)
+	}
+
+	res := buf.String()
+	if !strings.Contains(res, `cdn.jsdelivr.net/npm/@alpinejs/collapse`) {
+		t.Errorf("expected collapse plugin script tag, got %q", res)
+	}
+	if !strings.Contains(res, `cdn.jsdelivr.net/npm/alpinejs`) {
+		t.Errorf("expected alpine core script tag, got %q", res)
+	}
+	if !strings.Contains(res, `[x-cloak]{display:none !important;}`) {
+		t.Errorf("expected x-cloak css rule, got %q", res)
+	}
+
+	// Verify alpinejs alias
+	buf.Reset()
+	if err := engine.Render(&buf, `|alpinejs|`, nil); err != nil {
+		t.Fatalf("unexpected error rendering alpinejs alias: %v", err)
+	}
+	if !strings.Contains(buf.String(), `cdn.jsdelivr.net/npm/alpinejs`) {
+		t.Errorf("expected alpine core script tag for alpinejs alias, got %q", buf.String())
+	}
+
+	stateTemplate := `<div |alpine-data open=false count=0 tab='home'|>`
+	buf.Reset()
+	if err := engine.Render(&buf, stateTemplate, nil); err != nil {
+		t.Fatalf("unexpected error rendering state node: %v", err)
+	}
+
+	stateRes := buf.String()
+	if !strings.Contains(stateRes, `x-data="{ count: 0, open: false, tab: 'home' }"`) {
+		t.Errorf("expected x-data reactive state output, got %q", stateRes)
+	}
+
+	showTemplate := `<div |alpine-show 'open'| |alpine-cloak|>`
+	buf.Reset()
+	if err := engine.Render(&buf, showTemplate, nil); err != nil {
+		t.Fatalf("unexpected error rendering alpine-show node: %v", err)
+	}
+	showRes := buf.String()
+	if !strings.Contains(showRes, `x-show="open"`) || !strings.Contains(showRes, `x-cloak`) {
+		t.Errorf("expected x-show and x-cloak rendering, got %q", showRes)
 	}
 }

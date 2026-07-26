@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -783,4 +784,216 @@ type fallthroughNode struct{}
 
 func (n *fallthroughNode) Render(ctx *Context, w io.Writer) error {
 	return nil
+}
+
+// PWANode generates PWA manifest, theme, mobile viewport, icons, and service worker registration tags
+type PWANode struct {
+	Name        string
+	Manifest    string
+	Theme       string
+	Icon        string
+	SW          string
+	StatusColor string
+}
+
+func (n *PWANode) Render(ctx *Context, w io.Writer) error {
+	manifest := n.Manifest
+	if manifest == "" {
+		manifest = "/manifest.json"
+	}
+	theme := n.Theme
+	if theme == "" {
+		theme = "#000000"
+	}
+	statusColor := n.StatusColor
+	if statusColor == "" {
+		statusColor = "default"
+	}
+
+	var tags []string
+	tags = append(tags, `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">`)
+	tags = append(tags, fmt.Sprintf(`<meta name="theme-color" content="%s">`, htmlEscape(theme)))
+	tags = append(tags, `<meta name="mobile-web-app-capable" content="yes">`)
+	tags = append(tags, `<meta name="apple-mobile-web-app-capable" content="yes">`)
+	tags = append(tags, fmt.Sprintf(`<meta name="apple-mobile-web-app-status-bar-style" content="%s">`, htmlEscape(statusColor)))
+
+	if n.Name != "" {
+		tags = append(tags, fmt.Sprintf(`<meta name="apple-mobile-web-app-title" content="%s">`, htmlEscape(n.Name)))
+		tags = append(tags, fmt.Sprintf(`<meta name="application-name" content="%s">`, htmlEscape(n.Name)))
+	}
+
+	tags = append(tags, fmt.Sprintf(`<link rel="manifest" href="%s">`, htmlEscape(manifest)))
+
+	if n.Icon != "" {
+		tags = append(tags, fmt.Sprintf(`<link rel="apple-touch-icon" href="%s">`, htmlEscape(n.Icon)))
+		tags = append(tags, fmt.Sprintf(`<link rel="icon" href="%s">`, htmlEscape(n.Icon)))
+	}
+
+	if n.SW != "" {
+		tags = append(tags, fmt.Sprintf(`<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('%s');});}</script>`, htmlEscape(n.SW)))
+	}
+
+	output := strings.Join(tags, "\n")
+	_, err := io.WriteString(w, output)
+	return err
+}
+
+// HTMXNode generates script tags, config meta, extension scripts, and indicator styles for HTMX
+type HTMXNode struct {
+	Src        string
+	Extensions []string
+	Config     string
+	Indicator  bool
+}
+
+func (n *HTMXNode) Render(ctx *Context, w io.Writer) error {
+	src := n.Src
+	if src == "" {
+		src = "https://unpkg.com/htmx.org@1.9.10"
+	}
+
+	var tags []string
+	if n.Config != "" {
+		tags = append(tags, fmt.Sprintf(`<meta name="htmx-config" content="%s">`, htmlEscape(n.Config)))
+	}
+
+	tags = append(tags, fmt.Sprintf(`<script src="%s"></script>`, htmlEscape(src)))
+
+	for _, ext := range n.Extensions {
+		extName := strings.TrimSpace(ext)
+		if extName != "" {
+			extUrl := fmt.Sprintf("https://unpkg.com/htmx.org@1.9.10/dist/ext/%s.js", htmlEscape(extName))
+			tags = append(tags, fmt.Sprintf(`<script src="%s"></script>`, extUrl))
+		}
+	}
+
+	if n.Indicator {
+		tags = append(tags, `<style>.htmx-indicator{display:none;}.htmx-request .htmx-indicator,.htmx-request.htmx-indicator{display:inline-block;}</style>`)
+	}
+
+	output := strings.Join(tags, "\n")
+	_, err := io.WriteString(w, output)
+	return err
+}
+
+// HXAttrNode renders concise HTMX element attributes
+type HXAttrNode struct {
+	Method    string
+	URL       string
+	Target    string
+	Swap      string
+	Indicator string
+	Trigger   string
+}
+
+func (n *HXAttrNode) Render(ctx *Context, w io.Writer) error {
+	var attrs []string
+	if n.Method != "" && n.URL != "" {
+		attrs = append(attrs, fmt.Sprintf(`hx-%s="%s"`, n.Method, htmlEscape(n.URL)))
+	}
+	if n.Target != "" {
+		attrs = append(attrs, fmt.Sprintf(`hx-target="%s"`, htmlEscape(n.Target)))
+	}
+	if n.Swap != "" {
+		attrs = append(attrs, fmt.Sprintf(`hx-swap="%s"`, htmlEscape(n.Swap)))
+	}
+	if n.Indicator != "" {
+		attrs = append(attrs, fmt.Sprintf(`hx-indicator="%s"`, htmlEscape(n.Indicator)))
+	}
+	if n.Trigger != "" {
+		attrs = append(attrs, fmt.Sprintf(`hx-trigger="%s"`, htmlEscape(n.Trigger)))
+	}
+
+	output := strings.Join(attrs, " ")
+	_, err := io.WriteString(w, output)
+	return err
+}
+
+// AlpineNode generates script tags, plugin CDN references, and cloak styles for Alpine.js
+type AlpineNode struct {
+	Src     string
+	Plugins []string
+	Cloak   bool
+}
+
+func (n *AlpineNode) Render(ctx *Context, w io.Writer) error {
+	src := n.Src
+	if src == "" {
+		src = "https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"
+	}
+
+	var tags []string
+	for _, plugin := range n.Plugins {
+		pName := strings.TrimSpace(plugin)
+		if pName != "" {
+			pUrl := fmt.Sprintf("https://cdn.jsdelivr.net/npm/@alpinejs/%s@3.x.x/dist/cdn.min.js", htmlEscape(pName))
+			tags = append(tags, fmt.Sprintf(`<script defer src="%s"></script>`, pUrl))
+		}
+	}
+
+	tags = append(tags, fmt.Sprintf(`<script defer src="%s"></script>`, htmlEscape(src)))
+
+	if n.Cloak {
+		tags = append(tags, `<style>[x-cloak]{display:none !important;}</style>`)
+	}
+
+	output := strings.Join(tags, "\n")
+	_, err := io.WriteString(w, output)
+	return err
+}
+
+// StateNode generates Alpine.js x-data reactive component state declarations
+type StateNode struct {
+	StateMap map[string]string
+}
+
+func (n *StateNode) Render(ctx *Context, w io.Writer) error {
+	var pairs []string
+	keys := make([]string, 0, len(n.StateMap))
+	for k := range n.StateMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v := n.StateMap[k]
+		if v == "true" || v == "false" || isNumeric(v) || strings.HasPrefix(v, "[") || strings.HasPrefix(v, "{") {
+			pairs = append(pairs, fmt.Sprintf("%s: %s", k, v))
+		} else {
+			pairs = append(pairs, fmt.Sprintf("%s: '%s'", k, v))
+		}
+	}
+
+	jsonState := fmt.Sprintf("{ %s }", strings.Join(pairs, ", "))
+	output := fmt.Sprintf(`x-data="%s"`, strings.ReplaceAll(jsonState, `"`, "&quot;"))
+	_, err := io.WriteString(w, output)
+	return err
+}
+
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if (s[i] < '0' || s[i] > '9') && s[i] != '.' && s[i] != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// AlpineAttrNode renders generic Alpine.js x-* element attributes (e.g. alpine-show, alpine-text, alpine-cloak)
+type AlpineAttrNode struct {
+	Directive string
+	Value     string
+}
+
+func (n *AlpineAttrNode) Render(ctx *Context, w io.Writer) error {
+	dir := strings.TrimPrefix(n.Directive, "alpine-")
+	if n.Value == "" {
+		_, err := io.WriteString(w, fmt.Sprintf(`x-%s`, dir))
+		return err
+	}
+	_, err := io.WriteString(w, fmt.Sprintf(`x-%s="%s"`, dir, htmlEscape(n.Value)))
+	return err
 }

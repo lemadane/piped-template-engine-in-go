@@ -262,6 +262,42 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 			nodes = append(nodes, swNode)
 		case TokenFallthrough:
 			nodes = append(nodes, &fallthroughNode{})
+		case TokenPWA:
+			pwaNode, err := p.parsePWA(token)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, pwaNode)
+		case TokenHTMX:
+			htmxNode, err := p.parseHTMX(token)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, htmxNode)
+		case TokenHXAttr:
+			hxAttrNode, err := p.parseHXAttr(token)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, hxAttrNode)
+		case TokenAlpine:
+			alpineNode, err := p.parseAlpine(token)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, alpineNode)
+		case TokenState:
+			stateNode, err := p.parseState(token)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, stateNode)
+		case TokenAlpineAttr:
+			alpineAttrNode, err := p.parseAlpineAttr(token)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, alpineAttrNode)
 		default:
 			exprNode, err := p.parseExpression(token.Value)
 			if err != nil {
@@ -326,12 +362,7 @@ func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[strin
 		current := cursor.peek()
 		if current.Type == TokenElseIf {
 			cursor.next()
-			var cond string
-			if strings.HasPrefix(current.Value, "else-if ") {
-				cond = strings.TrimSpace(current.Value[len("else-if "):])
-			} else {
-				cond = strings.TrimSpace(current.Value[len("else if "):])
-			}
+			cond := strings.TrimSpace(current.Value[len("else if "):])
 			body, err := p.parseBlock(cursor, TokenEndIf, metadata)
 			if err != nil {
 				return nil, err
@@ -857,4 +888,222 @@ func findOutputIfIndex(source string) int {
 		}
 	}
 	return -1
+}
+
+func (p *Parser) parsePWA(tok Token) (Node, error) {
+	val := strings.TrimSpace(tok.Value)
+	if strings.HasPrefix(val, "pwa") {
+		val = strings.TrimSpace(val[3:])
+	}
+
+	attrs := parseKeyValuePairs(val)
+	name := attrs["name"]
+	if name == "" {
+		name = attrs["title"]
+	}
+
+	return &PWANode{
+		Name:        name,
+		Manifest:    attrs["manifest"],
+		Theme:       attrs["theme"],
+		Icon:        attrs["icon"],
+		SW:          attrs["sw"],
+		StatusColor: attrs["statusColor"],
+	}, nil
+}
+
+func parseKeyValuePairs(input string) map[string]string {
+	result := make(map[string]string)
+	i := 0
+	for i < len(input) {
+		for i < len(input) && isWhitespaceChar(input[i]) {
+			i++
+		}
+		if i >= len(input) {
+			break
+		}
+
+		eqIdx := strings.IndexByte(input[i:], '=')
+		if eqIdx == -1 {
+			break
+		}
+		key := strings.TrimSpace(input[i : i+eqIdx])
+		i += eqIdx + 1
+
+		for i < len(input) && isWhitespaceChar(input[i]) {
+			i++
+		}
+		if i >= len(input) {
+			break
+		}
+
+		var val string
+		if input[i] == '\'' || input[i] == '"' {
+			quote := input[i]
+			i++
+			end := strings.IndexByte(input[i:], quote)
+			if end == -1 {
+				val = input[i:]
+				i = len(input)
+			} else {
+				val = input[i : i+end]
+				i += end + 1
+			}
+		} else {
+			start := i
+			for i < len(input) && !isWhitespaceChar(input[i]) {
+				i++
+			}
+			val = input[start:i]
+		}
+
+		if key != "" {
+			result[key] = val
+		}
+	}
+	return result
+}
+
+func (p *Parser) parseHTMX(tok Token) (Node, error) {
+	val := strings.TrimSpace(tok.Value)
+	if strings.HasPrefix(val, "htmx") {
+		val = strings.TrimSpace(val[4:])
+	}
+
+	attrs := parseKeyValuePairs(val)
+	var exts []string
+	if extStr, ok := attrs["ext"]; ok && extStr != "" {
+		for _, e := range strings.Split(extStr, ",") {
+			if trimmed := strings.TrimSpace(e); trimmed != "" {
+				exts = append(exts, trimmed)
+			}
+		}
+	}
+
+	indicator := false
+	if indVal, ok := attrs["indicator"]; ok {
+		indicator = indVal == "true" || indVal == "1" || indVal == ""
+	}
+
+	return &HTMXNode{
+		Src:        attrs["src"],
+		Extensions: exts,
+		Config:     attrs["config"],
+		Indicator:  indicator,
+	}, nil
+}
+
+func (p *Parser) parseHXAttr(tok Token) (Node, error) {
+	val := strings.TrimSpace(tok.Value)
+	method := "get"
+	if strings.HasPrefix(val, "htmx-post ") {
+		method = "post"
+		val = val[10:]
+	} else if strings.HasPrefix(val, "htmx-put ") {
+		method = "put"
+		val = val[9:]
+	} else if strings.HasPrefix(val, "htmx-delete ") {
+		method = "delete"
+		val = val[12:]
+	} else if strings.HasPrefix(val, "htmx-patch ") {
+		method = "patch"
+		val = val[11:]
+	} else if strings.HasPrefix(val, "htmx-get ") {
+		val = val[9:]
+	}
+
+	val = strings.TrimSpace(val)
+
+	var urlPath string
+	attrsStr := val
+
+	if len(val) > 0 && (val[0] == '\'' || val[0] == '"') {
+		quote := val[0]
+		end := strings.IndexByte(val[1:], quote)
+		if end != -1 {
+			urlPath = val[1 : 1+end]
+			attrsStr = strings.TrimSpace(val[1+end+1:])
+		}
+	} else {
+		parts := strings.Fields(val)
+		if len(parts) > 0 {
+			urlPath = parts[0]
+			if len(val) > len(urlPath) {
+				attrsStr = strings.TrimSpace(val[len(urlPath):])
+			} else {
+				attrsStr = ""
+			}
+		}
+	}
+
+	attrs := parseKeyValuePairs(attrsStr)
+	return &HXAttrNode{
+		Method:    method,
+		URL:       urlPath,
+		Target:    attrs["target"],
+		Swap:      attrs["swap"],
+		Indicator: attrs["indicator"],
+		Trigger:   attrs["trigger"],
+	}, nil
+}
+
+func (p *Parser) parseAlpine(tok Token) (Node, error) {
+	val := strings.TrimSpace(tok.Value)
+	if strings.HasPrefix(val, "alpinejs") {
+		val = strings.TrimSpace(val[8:])
+	} else if strings.HasPrefix(val, "alpine") {
+		val = strings.TrimSpace(val[6:])
+	} else if strings.HasPrefix(val, "reactive") {
+		val = strings.TrimSpace(val[8:])
+	}
+
+	attrs := parseKeyValuePairs(val)
+	var plugins []string
+	if pluginStr, ok := attrs["plugins"]; ok && pluginStr != "" {
+		for _, pl := range strings.Split(pluginStr, ",") {
+			if trimmed := strings.TrimSpace(pl); trimmed != "" {
+				plugins = append(plugins, trimmed)
+			}
+		}
+	}
+
+	cloak := true
+	if cVal, ok := attrs["cloak"]; ok {
+		cloak = cVal == "true" || cVal == "1" || cVal == ""
+	}
+
+	return &AlpineNode{
+		Src:     attrs["src"],
+		Plugins: plugins,
+		Cloak:   cloak,
+	}, nil
+}
+
+func (p *Parser) parseState(tok Token) (Node, error) {
+	val := strings.TrimSpace(tok.Value)
+	if strings.HasPrefix(val, "alpine-data") {
+		val = strings.TrimSpace(val[11:])
+	}
+
+	attrs := parseKeyValuePairs(val)
+	return &StateNode{
+		StateMap: attrs,
+	}, nil
+}
+
+func (p *Parser) parseAlpineAttr(tok Token) (Node, error) {
+	val := strings.TrimSpace(tok.Value)
+	parts := strings.SplitN(val, " ", 2)
+	dir := parts[0]
+	expr := ""
+	if len(parts) > 1 {
+		expr = strings.TrimSpace(parts[1])
+		if len(expr) > 1 && ((expr[0] == '\'' && expr[len(expr)-1] == '\'') || (expr[0] == '"' && expr[len(expr)-1] == '"')) {
+			expr = expr[1 : len(expr)-1]
+		}
+	}
+	return &AlpineAttrNode{
+		Directive: dir,
+		Value:     expr,
+	}, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,6 +47,69 @@ func NewFileRouter(engine *Engine, routesDir string) (*FileRouter, error) {
 		return nil, err
 	}
 
+	return router, nil
+}
+
+func NewFileRouterFS(engine *Engine, fsys fs.FS, rootDir string) (*FileRouter, error) {
+	router := &FileRouter{
+		engine:      engine,
+		routesDir:   rootDir,
+		dataLoaders: make(map[string]PageDataLoader),
+	}
+
+	var routes []Route
+	err := fs.WalkDir(fsys, rootDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if d.Name() == "+page.pte" {
+			rel, err := filepath.Rel(rootDir, path)
+			if err != nil {
+				rel = path
+			}
+
+			dirPart := filepath.Dir(rel)
+			var routePath string
+			if dirPart == "." || dirPart == "" {
+				routePath = "/"
+			} else {
+				routePath = "/" + filepath.ToSlash(dirPart)
+			}
+
+			data, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				return err
+			}
+
+			compiled, err := engine.Compile(string(data))
+			if err != nil {
+				return fmt.Errorf("failed to compile routing page %s: %w", path, err)
+			}
+
+			routes = append(routes, Route{
+				Path:         routePath,
+				TemplatePath: path,
+				Compiled:     compiled,
+				Segments:     splitRoutePath(routePath),
+			})
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(routes, func(i, j int) bool {
+		return isMoreSpecificRoute(routes[i], routes[j])
+	})
+
+	router.routes = routes
 	return router, nil
 }
 
@@ -110,29 +174,32 @@ func (r *FileRouter) discoverRoutes() error {
 
 	// Sort routes based on segment specificity (static routes priority over wildcards)
 	sort.Slice(routes, func(i, j int) bool {
-		segsI := routes[i].Segments
-		segsJ := routes[j].Segments
-
-		limit := len(segsI)
-		if len(segsJ) < limit {
-			limit = len(segsJ)
-		}
-
-		for k := 0; k < limit; k++ {
-			isWildI := strings.HasPrefix(segsI[k], "[") && strings.HasSuffix(segsI[k], "]")
-			isWildJ := strings.HasPrefix(segsJ[k], "[") && strings.HasSuffix(segsJ[k], "]")
-
-			if isWildI != isWildJ {
-				// Static segments (isWildI = false) should come first in search order
-				return !isWildI
-			}
-		}
-
-		return len(segsI) > len(segsJ)
+		return isMoreSpecificRoute(routes[i], routes[j])
 	})
 
 	r.routes = routes
 	return nil
+}
+
+func isMoreSpecificRoute(r1, r2 Route) bool {
+	segsI := r1.Segments
+	segsJ := r2.Segments
+
+	limit := len(segsI)
+	if len(segsJ) < limit {
+		limit = len(segsJ)
+	}
+
+	for k := 0; k < limit; k++ {
+		isWildI := strings.HasPrefix(segsI[k], "[") && strings.HasSuffix(segsI[k], "]")
+		isWildJ := strings.HasPrefix(segsJ[k], "[") && strings.HasSuffix(segsJ[k], "]")
+
+		if isWildI != isWildJ {
+			return !isWildI
+		}
+	}
+
+	return len(segsI) > len(segsJ)
 }
 
 func (r *FileRouter) Match(urlPath string) (*Route, map[string]string) {
@@ -267,13 +334,18 @@ func (r *FileRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
+		isHTMX := req.Header.Get("HX-Request") == "true"
 		model["page"] = &PageContext{
-			RequestURI:  req.URL.Path,
-			QueryString: req.URL.RawQuery,
-			Method:      req.Method,
-			Headers:     hdrMap,
-			Params:      paramMap,
-			Cookies:     cookieMap,
+			RequestURI:   req.URL.Path,
+			QueryString:  req.URL.RawQuery,
+			Method:       req.Method,
+			Headers:      hdrMap,
+			Params:       paramMap,
+			Cookies:      cookieMap,
+			IsHTMX:       isHTMX,
+			HXTarget:     req.Header.Get("HX-Target"),
+			HXTrigger:    req.Header.Get("HX-Trigger"),
+			HXCurrentURL: req.Header.Get("HX-Current-URL"),
 		}
 	}
 
@@ -294,6 +366,24 @@ func (r *FileRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		contentType = fmt.Sprintf("%v", ct)
 	}
 	w.Header().Set("Content-Type", contentType)
+
+	// Apply HTMX metadata response headers
+	if hxTrig, ok := metadata["hxTrigger"]; ok {
+		w.Header().Set("HX-Trigger", fmt.Sprintf("%v", hxTrig))
+	}
+	if hxRedir, ok := metadata["hxRedirect"]; ok {
+		w.Header().Set("HX-Redirect", fmt.Sprintf("%v", hxRedir))
+	}
+	if hxPush, ok := metadata["hxPushUrl"]; ok {
+		w.Header().Set("HX-Push-Url", fmt.Sprintf("%v", hxPush))
+	}
+	if hxRef, ok := metadata["hxRefresh"]; ok {
+		if b, ok := hxRef.(bool); ok && b {
+			w.Header().Set("HX-Refresh", "true")
+		} else {
+			w.Header().Set("HX-Refresh", fmt.Sprintf("%v", hxRef))
+		}
+	}
 
 	// Render the template
 	ctx := NewContext(model)
@@ -343,11 +433,15 @@ func splitRoutePath(p string) []string {
 }
 
 type PageContext struct {
-	RequestURI  string
-	QueryString string
-	Method      string
-	Headers     map[string]string
-	Params      map[string]any
-	Cookies     map[string]string
+	RequestURI   string
+	QueryString  string
+	Method       string
+	Headers      map[string]string
+	Params       map[string]any
+	Cookies      map[string]string
+	IsHTMX       bool
+	HXTarget     string
+	HXTrigger    string
+	HXCurrentURL string
 }
 

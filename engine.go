@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +21,7 @@ type Engine struct {
 	includedTemplates map[string]string
 	lexer             *Lexer
 	parser            *Parser
+	fsys              fs.FS
 }
 
 type EngineOption func(*Engine)
@@ -49,6 +51,12 @@ func WithInMemoryTemplates(templates map[string]string) EngineOption {
 				e.includedTemplates[e.normalizeTemplateName(k)] = v
 			}
 		}
+	}
+}
+
+func WithFS(fsys fs.FS) EngineOption {
+	return func(e *Engine) {
+		e.fsys = fsys
 	}
 }
 
@@ -189,6 +197,24 @@ func (e *Engine) RenderFragmentStream(name, fragment string, data map[string]any
 	return r
 }
 
+func (e *Engine) RenderFragments(w io.Writer, name string, fragmentNames []string, data map[string]any) error {
+	for _, fragName := range fragmentNames {
+		if err := e.RenderFragment(w, name, fragName, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) RenderFragmentsStream(name string, fragmentNames []string, data map[string]any) io.Reader {
+	r, w := io.Pipe()
+	go func() {
+		err := e.RenderFragments(w, name, fragmentNames, data)
+		_ = w.CloseWithError(err)
+	}()
+	return r
+}
+
 // Internal methods used by nodes
 
 func (e *Engine) renderNamedTemplate(w io.Writer, templateName string, ctx *Context) error {
@@ -222,6 +248,15 @@ func (e *Engine) loadTemplateSource(templateOrTemplateName string) (string, erro
 		normalized := e.normalizeTemplateName(templateOrTemplateName)
 		if source, ok := e.includedTemplates[normalized]; ok {
 			return source, nil
+		}
+
+		if e.fsys != nil {
+			relPath := normalized + e.suffix
+			relPath = strings.TrimPrefix(relPath, "/")
+			data, err := fs.ReadFile(e.fsys, relPath)
+			if err == nil {
+				return string(data), nil
+			}
 		}
 
 		path, err := e.resolveTemplatePath(normalized)
