@@ -56,6 +56,41 @@ func (l *Lexer) Tokenize(template string) ([]Token, error) {
 			continue
 		}
 
+		// Check for comment |# ... #| or |# ... |
+		if strings.HasPrefix(template[absolutePipeIndex:], "|#") {
+			isBlock := false
+			commentEnd := -1
+			for i := absolutePipeIndex + 2; i < len(template); i++ {
+				if template[i] == '|' {
+					if i > absolutePipeIndex+2 && template[i-1] == '#' {
+						isBlock = true
+						commentEnd = i - 1
+						break
+					} else {
+						isBlock = false
+						commentEnd = i
+						break
+					}
+				}
+			}
+
+			if commentEnd == -1 {
+				return nil, fmt.Errorf("unclosed comment starting at index %d", absolutePipeIndex)
+			}
+
+			tokens = append(tokens, Token{
+				Type:     TokenComment,
+				Value:    template[absolutePipeIndex+2 : commentEnd],
+				Position: absolutePipeIndex,
+			})
+			if isBlock {
+				cursor = commentEnd + 2
+			} else {
+				cursor = commentEnd + 1
+			}
+			continue
+		}
+
 		// Standard expression or directive pipe
 		closingPipe := strings.IndexByte(template[absolutePipeIndex+1:], '|')
 		if closingPipe == -1 {

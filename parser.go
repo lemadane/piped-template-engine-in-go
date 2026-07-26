@@ -276,6 +276,14 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 
 func (p *Parser) parseExpression(val string) (Node, error) {
 	trimmed := strings.TrimSpace(val)
+
+	var condition string
+	ifIdx := findOutputIfIndex(trimmed)
+	if ifIdx != -1 {
+		condition = strings.TrimSpace(trimmed[ifIdx+2:])
+		trimmed = strings.TrimSpace(trimmed[:ifIdx])
+	}
+
 	var mode OutputMode
 	var expr string
 
@@ -300,6 +308,7 @@ func (p *Parser) parseExpression(val string) (Node, error) {
 		Expression: expr,
 		Mode:       mode,
 		Evaluator:  p.evaluator,
+		Condition:  condition,
 	}, nil
 }
 
@@ -803,4 +812,49 @@ func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata m
 		DefaultBlock: defaultBlock,
 		Evaluator:    p.evaluator,
 	}, nil
+}
+
+func findOutputIfIndex(source string) int {
+	insideSingleQuote := false
+	insideDoubleQuote := false
+	parenthesisDepth := 0
+
+	for index := 0; index <= len(source)-len("if"); index++ {
+		current := source[index]
+
+		if current == '\'' && !insideDoubleQuote {
+			insideSingleQuote = !insideSingleQuote
+			continue
+		}
+		if current == '"' && !insideSingleQuote {
+			insideDoubleQuote = !insideDoubleQuote
+			continue
+		}
+		if insideSingleQuote || insideDoubleQuote {
+			continue
+		}
+
+		if current == '(' {
+			parenthesisDepth++
+			continue
+		}
+		if current == ')' {
+			parenthesisDepth--
+			continue
+		}
+		if parenthesisDepth != 0 {
+			continue
+		}
+
+		if strings.HasPrefix(source[index:], "if") {
+			beforeIsBoundary := index == 0 || isWhitespaceChar(source[index-1])
+			afterIndex := index + len("if")
+			afterIsBoundary := afterIndex >= len(source) || isWhitespaceChar(source[afterIndex])
+
+			if beforeIsBoundary && afterIsBoundary {
+				return index
+			}
+		}
+	}
+	return -1
 }

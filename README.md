@@ -250,6 +250,19 @@ func handleMetricsUpdate(w http.ResponseWriter, r *http.Request) {
 - **HTML Attributes**: `<input value="|attr user.name|">`
 - **URL Encoding**: `<a href="/search?q=|url query|">Search</a>`
 - **JSON Encoding**: `var data = |json product|;`
+- **Conditional Attribute Shorthand & Cleanup**:
+  ```html
+  <input class="form-input" |attr checked if completed|>
+  ```
+  If `completed` is true, renders `<input class="form-input" checked>`. If false, automatically strips the attribute and cleans up any redundant whitespace so the result is exactly `<input class="form-input">`.
+
+  You can also bind values to attributes conditionally:
+  ```html
+  <div |attr class=btnClass if hasError|>
+  ```
+  Renders `<div class="btn-danger">` if `hasError` evaluates to true.
+
+
 
 ### 2. Optional Chaining & Null Coalescing
 Avoid errors on missing nested variables:
@@ -388,3 +401,15 @@ Isolate sections from rendering crashes/nil-pointer errors:
     <p class="error-log">Failed to load profile details: |err|</p>
 |/attempt|
 ```
+
+### 12. Template Comments
+Write developer comments that are completely stripped out at compile time:
+- **Single-Line Comment**: `|# This comment will not render |`
+- **Multi-Line Comment**:
+```html
+|#
+   This is a block comment.
+   It spans multiple lines.
+#|
+```
+- **Reference Comment**: `|-- Old style comments are also supported --|`

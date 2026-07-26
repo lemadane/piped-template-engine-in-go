@@ -3,10 +3,12 @@ package pte
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strings"
 )
 
@@ -14,14 +16,38 @@ type Node interface {
 	Render(ctx *Context, w io.Writer) error
 }
 
+var errConditionalAttributeSkipped = errors.New("conditional attribute skipped")
+
 // BlockNode holds a list of child nodes
 type BlockNode struct {
 	Children []Node
 }
 
 func (n *BlockNode) Render(ctx *Context, w io.Writer) error {
-	for _, child := range n.Children {
-		if err := child.Render(ctx, w); err != nil {
+	for i, child := range n.Children {
+		err := child.Render(ctx, w)
+		if err == errConditionalAttributeSkipped {
+			if buf, ok := w.(*bytes.Buffer); ok {
+				data := buf.Bytes()
+				for len(data) > 0 && isWhitespaceChar(data[len(data)-1]) {
+					data = data[:len(data)-1]
+				}
+				buf.Reset()
+				buf.Write(data)
+			}
+
+			if i+1 < len(n.Children) {
+				if nextTextNode, ok := n.Children[i+1].(*TextNode); ok {
+					text := string(nextTextNode.Value)
+					trimmed := strings.TrimLeft(text, " \t\r\n")
+					if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "/>") {
+						nextTextNode.Value = []byte(trimmed)
+					}
+				}
+			}
+			continue
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -58,9 +84,34 @@ type ExpressionNode struct {
 	Expression string
 	Mode       OutputMode
 	Evaluator  *Evaluator
+	Condition  string
 }
 
 func (n *ExpressionNode) Render(ctx *Context, w io.Writer) error {
+	if n.Condition != "" {
+		cond, err := n.Evaluator.EvaluateBoolean(n.Condition, ctx)
+		if err != nil {
+			return err
+		}
+		if !cond {
+			if n.Mode == ModeAttributeEscaped {
+				return errConditionalAttributeSkipped
+			}
+			return nil
+		}
+
+		if n.Mode == ModeAttributeEscaped {
+			attrOutput, err := n.renderConditionalAttributeOutput(n.Expression, ctx)
+			if err != nil {
+				return err
+			}
+			if attrOutput != "" {
+				_, err = io.WriteString(w, attrOutput)
+				return err
+			}
+		}
+	}
+
 	val, err := n.Evaluator.Evaluate(n.Expression, ctx)
 	if err != nil {
 		return err
@@ -69,6 +120,83 @@ func (n *ExpressionNode) Render(ctx *Context, w io.Writer) error {
 	formatted := n.formatValue(val)
 	_, err = io.WriteString(w, formatted)
 	return err
+}
+
+func (n *ExpressionNode) renderConditionalAttributeOutput(expression string, ctx *Context) (string, error) {
+	trimmedExpression := strings.TrimSpace(expression)
+
+	if isConditionalAttributeLiteral(trimmedExpression) {
+		return attributeEscape(trimmedExpression), nil
+	}
+
+	equalsIndex := findTopLevelEqualsIndex(trimmedExpression)
+	if equalsIndex == -1 {
+		return "", nil
+	}
+
+	attributeName := strings.TrimSpace(trimmedExpression[:equalsIndex])
+	valueExpression := strings.TrimSpace(trimmedExpression[equalsIndex+1:])
+
+	if !isValidAttributeName(attributeName) {
+		return "", nil
+	}
+
+	if valueExpression == "" {
+		return "", fmt.Errorf("conditional attribute value must not be empty")
+	}
+
+	value, err := n.Evaluator.Evaluate(valueExpression, ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return attributeName + "=\"" + attributeEscape(value) + "\"", nil
+}
+
+func isConditionalAttributeLiteral(expr string) bool {
+	return isValidAttributeName(expr) && !strings.Contains(expr, "=")
+}
+
+var attrNameRegex = regexp.MustCompile(`^[A-Za-z_:][A-Za-z0-9_:.\-]*$`)
+
+func isValidAttributeName(name string) bool {
+	return attrNameRegex.MatchString(name)
+}
+
+func findTopLevelEqualsIndex(expression string) int {
+	insideSingleQuote := false
+	insideDoubleQuote := false
+	parenthesisDepth := 0
+
+	for index := 0; index < len(expression); index++ {
+		current := expression[index]
+
+		if current == '\'' && !insideDoubleQuote {
+			insideSingleQuote = !insideSingleQuote
+			continue
+		}
+		if current == '"' && !insideSingleQuote {
+			insideDoubleQuote = !insideDoubleQuote
+			continue
+		}
+		if insideSingleQuote || insideDoubleQuote {
+			continue
+		}
+
+		if current == '(' {
+			parenthesisDepth++
+			continue
+		}
+		if current == ')' {
+			parenthesisDepth--
+			continue
+		}
+
+		if parenthesisDepth == 0 && current == '=' {
+			return index
+		}
+	}
+	return -1
 }
 
 func (n *ExpressionNode) formatValue(value any) string {

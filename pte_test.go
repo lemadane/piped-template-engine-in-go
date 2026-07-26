@@ -410,3 +410,87 @@ func TestStreamingRender(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, res)
 	}
 }
+
+func TestHashComments(t *testing.T) {
+	engine := NewEngine("")
+	template := "Hello|# this is a single line comment | World! |# \n this is a \n multi line block comment #| Hello!"
+	var buf bytes.Buffer
+	if err := engine.Render(&buf, template, nil); err != nil {
+		t.Fatal(err)
+	}
+	expected := "Hello World!  Hello!"
+	if buf.String() != expected {
+		t.Errorf("expected %q, got %q", expected, buf.String())
+	}
+}
+
+func TestCircularInclude(t *testing.T) {
+	templates := map[string]string{
+		"a": "|include b|",
+		"b": "|include a|",
+	}
+	engine := NewEngine("", WithInMemoryTemplates(templates))
+	var buf bytes.Buffer
+	err := engine.Render(&buf, "a", nil)
+	if err == nil {
+		t.Fatal("expected circular include error but got nil")
+	}
+	if !strings.Contains(err.Error(), "circular include detected") {
+		t.Errorf("expected circular include error, got %v", err)
+	}
+}
+
+func TestConditionalAttributeShorthandAndCleanup(t *testing.T) {
+	engine := NewEngine("")
+
+	tests := []struct {
+		name      string
+		template  string
+		completed bool
+		expected  string
+	}{
+		{
+			name:      "Attribute shorthand and cleanup - true case",
+			template:  `<input class="form-input" |attr checked if completed|>`,
+			completed: true,
+			expected:  `<input class="form-input" checked>`,
+		},
+		{
+			name:      "Attribute shorthand and cleanup - false case",
+			template:  `<input class="form-input" |attr checked if completed|>`,
+			completed: false,
+			expected:  `<input class="form-input">`,
+		},
+		{
+			name:      "Attribute shorthand and cleanup - false case with trailing tag space",
+			template:  `<input class="form-input" |attr checked if completed| >`,
+			completed: false,
+			expected:  `<input class="form-input">`,
+		},
+		{
+			name:      "Attribute shorthand with expression - true case",
+			template:  `<div |attr class=cls if completed|>`,
+			completed: true,
+			expected:  `<div class="btn-success">`,
+		},
+		{
+			name:      "Attribute shorthand with expression - false case",
+			template:  `<div |attr class=cls if completed|>`,
+			completed: false,
+			expected:  `<div>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			data := map[string]any{"completed": tt.completed, "cls": "btn-success"}
+			if err := engine.Render(&buf, tt.template, data); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if buf.String() != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, buf.String())
+			}
+		})
+	}
+}

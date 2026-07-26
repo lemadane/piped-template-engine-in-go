@@ -239,6 +239,44 @@ func (r *FileRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Inject standard request PageContext
+	if _, exists := model["page"]; !exists {
+		hdrMap := make(map[string]string)
+		for k, vals := range req.Header {
+			if len(vals) > 0 {
+				hdrMap[k] = vals[0]
+			}
+		}
+
+		cookieMap := make(map[string]string)
+		for _, cookie := range req.Cookies() {
+			cookieMap[cookie.Name] = cookie.Value
+		}
+
+		paramMap := make(map[string]any)
+		for k, v := range params {
+			paramMap[k] = v
+		}
+		for k, vals := range req.URL.Query() {
+			if len(vals) > 0 {
+				if len(vals) == 1 {
+					paramMap[k] = vals[0]
+				} else {
+					paramMap[k] = vals
+				}
+			}
+		}
+
+		model["page"] = &PageContext{
+			RequestURI:  req.URL.Path,
+			QueryString: req.URL.RawQuery,
+			Method:      req.Method,
+			Headers:     hdrMap,
+			Params:      paramMap,
+			Cookies:     cookieMap,
+		}
+	}
+
 	// Set title from metadata if not present in model
 	if title, ok := metadata["title"]; ok {
 		if _, exists := model["title"]; !exists {
@@ -303,3 +341,13 @@ func splitRoutePath(p string) []string {
 	}
 	return strings.Split(p, "/")
 }
+
+type PageContext struct {
+	RequestURI  string
+	QueryString string
+	Method      string
+	Headers     map[string]string
+	Params      map[string]any
+	Cookies     map[string]string
+}
+
