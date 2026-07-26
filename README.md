@@ -36,6 +36,63 @@ go get pte # If published, or copy the package directly to your vendor/internal 
 
 ---
 
+## SvelteKit-Style File-Based Routing
+
+PTEGo includes a directory-tree routing engine. You organize your pages in folders, and the engine automatically constructs URL paths and resolves dynamic parameters.
+
+### Directory Layout
+
+Create a routes directory (e.g. `pte-routes`):
+```text
+pte-routes/
+├── +page.pte                      // Maps to "/"
+├── about/
+│   └── +page.pte                  // Maps to "/about"
+└── products/
+    └── [id]/
+        └── +page.pte              // Maps to "/products/[id]" (wildcard parameter)
+```
+
+### Setup and HTTP Server
+
+Use `NewFileRouter` to discover and handle requests automatically:
+
+```go
+package main
+
+import (
+	"net/http"
+	"pte"
+)
+
+func main() {
+	engine := pte.NewEngine("")
+	
+	// Create router scanning the "pte-routes" folder
+	router, _ := pte.NewFileRouter(engine, "./pte-routes")
+
+	// Register a page data loader for product details
+	router.RegisterDataLoader("/products/[id]", func(r *http.Request, params map[string]string) (map[string]any, error) {
+		id := params["id"]
+		// Load product details from DB ...
+		return map[string]any{
+			"product": map[string]any{"id": id, "name": "Espresso Machine", "price": 499.0},
+		}, nil
+	})
+
+	// Optional Authentication Check hook mapping to |page auth=true roles='...'| metadata
+	router.AuthCheck = func(r *http.Request, requiredRoles []string) (bool, int, string) {
+		// Verify session token and roles ...
+		return true, 0, ""
+	}
+
+	// Serve HTTP requests (FileRouter implements http.Handler)
+	http.ListenAndServe(":8080", router)
+}
+```
+
+---
+
 ## MVC Web Project Integrations
 
 PTEGo integrates seamlessly with standard `net/http` and all popular Go web frameworks.
