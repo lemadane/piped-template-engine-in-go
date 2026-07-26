@@ -11,7 +11,7 @@ Featuring a goroutine-based asynchronous streaming renderer (`RenderStream`), PT
 Initialize PTEGo in your Go module:
 
 ```bash
-go get pte # Or copy the package directly to your internal/vendor folder
+go get github.com/lemadane/piped-template-engine-in-go # Or copy the package directly to your internal/vendor folder
 ```
 
 ---
@@ -29,7 +29,7 @@ package main
 import (
 	"io"
 	"net/http"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -58,7 +58,7 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v2"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -84,7 +84,7 @@ package main
 import (
 	"net/http"
 	"github.com/gin-gonic/gin"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -111,7 +111,7 @@ package main
 
 import (
 	"github.com/labstack/echo/v4"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -136,7 +136,7 @@ import (
 	"net/http"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -160,7 +160,7 @@ package main
 
 import (
 	beego "github.com/beego/beego/v2/server/web"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 type MainController struct {
@@ -187,7 +187,7 @@ package main
 
 import (
 	"github.com/gobuffalo/buffalo"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -211,7 +211,7 @@ package main
 
 import (
 	"github.com/kataras/iris/v12"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -236,7 +236,7 @@ package main
 import (
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -279,7 +279,7 @@ package main
 
 import (
 	"net/http"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 func main() {
@@ -1068,7 +1068,7 @@ package main
 
 import (
 	"embed"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 //go:embed templates/*
@@ -1088,7 +1088,7 @@ package main
 import (
 	"embed"
 	"net/http"
-	"pte"
+	"github.com/lemadane/piped-template-engine-in-go"
 )
 
 //go:embed templates/* pte-routes/*
