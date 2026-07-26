@@ -1,104 +1,27 @@
 # Piped Templating Engine for Go (PTEGo)
 
-PTEGo is an extremely lightweight, high-performance, and feature-rich template engine written in pure Go (no third-party dependencies). It compiles templates into an Abstract Syntax Tree (AST) once and caches them, allowing for ultra-fast rendering.
+PTEGo is an extremely fast, lightweight, and compile-cached template engine written in pure Go (no third-party dependencies). It compiles templates into an Abstract Syntax Tree (AST) once and caches them, allowing for rapid HTML generation.
 
-PTEGo features a goroutine-based asynchronous streaming renderer (`RenderStream`), making it exceptionally suitable for modern Go MVC web projects, server-sent events, and HTMX-driven real-time interfaces.
-
----
-
-## Features
-
-1. **Pipe-Based Output syntax** (`|var|`) with HTML escaping by default.
-2. **Flexible Escaping Modes**: `|html expr|` (raw/trusted), `|attr expr|` (attribute-escaped), `|url expr|` (URL query encoded), and `|json expr|` (JSON encoded).
-3. **Optional Chaining & Null Coalescing** (`?.`, `??`): Safely traverse maps, structs, and pointers.
-4. **Ternary Conditional Expressions** (`? :`).
-5. **Conditionals** (`|if|`, `|else-if|`, `|else|`, `|/if|`).
-6. **Loops** (`|each item in list|`, Map key-value iteration, loop metadata `each.index`, fallback `|else|` block, and `|separator|` nodes).
-7. **Switch Statements** (`|switch|`, `|case|`, `|default|`) with automatic break and explicit `|fallthrough|`.
-8. **Macros** (`|macro alert(msg, type)|` ... `|/macro|`) to define reusable template functions.
-9. **File-Based Includes** (`|include partials/header|` and optional model scoping `with childModel`).
-10. **Layout Inheritance** (`|layout layouts/main|`, sections and yields).
-11. **Reusable Components & Slots** (`|component components/card|` with custom `|slot title|`).
-12. **Fragment Rendering**: Render target subsets (`RenderFragment`) for optimal HTMX updates.
-13. **Attempt/Recover Blocks** (`|attempt|` ... `|recover as err|`) for granular error isolation.
-14. **Filters**: `upper`, `lower`, `trim`, `capitalize`, `slug`, `length`, `default`, `currency`, `number`, `date`, `time`, `datetime`.
-15. **Minification & Prettification**: Automated space collapsing and code formatting.
+Featuring a goroutine-based asynchronous streaming renderer (`RenderStream`), PTEGo is highly optimized for modern Go MVC web projects, real-time server-sent events, and HTMX-driven interactive pages.
 
 ---
 
-## Installation
+## Quick Start & Installation
 
-Add PTEGo to your Go module:
+Initialize PTEGo in your Go module:
 
 ```bash
-go get pte # If published, or copy the package directly to your vendor/internal folder
+go get pte # Or copy the package directly to your internal/vendor folder
 ```
 
 ---
 
-## SvelteKit-Style File-Based Routing
+## Web Framework Integrations
 
-PTEGo includes a directory-tree routing engine. You organize your pages in folders, and the engine automatically constructs URL paths and resolves dynamic parameters.
+PTEGo integrates seamlessly with all popular Go web frameworks and standard multiplexers.
 
-### Directory Layout
-
-Create a routes directory (e.g. `pte-routes`):
-```text
-pte-routes/
-├── +page.pte                      // Maps to "/"
-├── about/
-│   └── +page.pte                  // Maps to "/about"
-└── products/
-    └── [id]/
-        └── +page.pte              // Maps to "/products/[id]" (wildcard parameter)
-```
-
-### Setup and HTTP Server
-
-Use `NewFileRouter` to discover and handle requests automatically:
-
-```go
-package main
-
-import (
-	"net/http"
-	"pte"
-)
-
-func main() {
-	engine := pte.NewEngine("")
-	
-	// Create router scanning the "pte-routes" folder
-	router, _ := pte.NewFileRouter(engine, "./pte-routes")
-
-	// Register a page data loader for product details
-	router.RegisterDataLoader("/products/[id]", func(r *http.Request, params map[string]string) (map[string]any, error) {
-		id := params["id"]
-		// Load product details from DB ...
-		return map[string]any{
-			"product": map[string]any{"id": id, "name": "Espresso Machine", "price": 499.0},
-		}, nil
-	})
-
-	// Optional Authentication Check hook mapping to |page auth=true roles='...'| metadata
-	router.AuthCheck = func(r *http.Request, requiredRoles []string) (bool, int, string) {
-		// Verify session token and roles ...
-		return true, 0, ""
-	}
-
-	// Serve HTTP requests (FileRouter implements http.Handler)
-	http.ListenAndServe(":8080", router)
-}
-```
-
----
-
-## MVC Web Project Integrations
-
-PTEGo integrates seamlessly with standard `net/http` and all popular Go web frameworks.
-
-### 1. Standard `net/http` (with Streaming)
-Leverage `RenderStream` to compile and stream HTML chunks to the client concurrently:
+### 1. Standard `net/http` (with Asynchronous Streaming)
+PTEGo can write compiled HTML bytes concurrently to network socket writers without buffering entire pages, optimizing Memory usage and Time to First Byte (TTFB).
 
 ```go
 package main
@@ -116,51 +39,20 @@ func main() {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		
 		data := map[string]any{
-			"title": "Home Page",
+			"title": "Dashboard",
 			"user":  map[string]any{"name": "Alice"},
 		}
 
-		// Streams template output directly over the network using io.Pipe
+		// Compile and stream output concurrently via standard io.Pipe
 		reader := engine.RenderStream("pages/home", data)
-		io.Copy(w, reader)
+		_, _ = io.Copy(w, reader)
 	})
 
 	http.ListenAndServe(":8080", nil)
 }
 ```
 
-### 2. Gin Integration
-```go
-package main
-
-import (
-	"net/http"
-	"github.com/gin-gonic/gin"
-	"pte"
-)
-
-func main() {
-	r := gin.Default()
-	engine := pte.NewEngine("./templates")
-
-	r.GET("/products", func(c *gin.Context) {
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		data := map[string]any{
-			"title":    "Store",
-			"products": []any{"Coffee", "Tea"},
-		}
-		
-		err := engine.Render(c.Writer, "pages/products", data)
-		if err != nil {
-			c.String(http.StatusInternalServerError, err.Error())
-		}
-	})
-
-	r.Run(":8080")
-}
-```
-
-### 3. Fiber Integration
+### 2. Fiber Integration
 ```go
 package main
 
@@ -175,14 +67,41 @@ func main() {
 
 	app.Get("/", func(c *fiber.Ctx) error {
 		c.Set("Content-Type", "text/html; charset=utf-8")
+		data := map[string]any{"message": "Hello from Fiber!"}
 		
-		data := map[string]any{"name": "World"}
-		
-		// Render directly to Fiber's context response stream
+		// Write directly to Fiber context's response stream
 		return engine.Render(c.Response().BodyWriter(), "pages/index", data)
 	})
 
 	app.Listen(":8080")
+}
+```
+
+### 3. Gin Integration
+```go
+package main
+
+import (
+	"net/http"
+	"github.com/gin-gonic/gin"
+	"pte"
+)
+
+func main() {
+	r := gin.Default()
+	engine := pte.NewEngine("./templates")
+
+	r.GET("/", func(c *gin.Context) {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		data := map[string]any{"message": "Hello from Gin!"}
+		
+		err := engine.Render(c.Writer, "pages/index", data)
+		if err != nil {
+			c.String(http.StatusInternalServerError, err.Error())
+		}
+	})
+
+	r.Run(":8080")
 }
 ```
 
@@ -191,7 +110,6 @@ func main() {
 package main
 
 import (
-	"net/http"
 	"github.com/labstack/echo/v4"
 	"pte"
 )
@@ -202,8 +120,8 @@ func main() {
 
 	e.GET("/", func(c echo.Context) error {
 		c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
-		data := map[string]any{"message": "Hello Echo!"}
-		return engine.Render(c.Response().Writer, "index", data)
+		data := map[string]any{"message": "Hello from Echo!"}
+		return engine.Render(c.Response().Writer, "pages/index", data)
 	})
 
 	e.Logger.Fatal(e.Start(":8080"))
@@ -212,72 +130,76 @@ func main() {
 
 ---
 
-## HTMX Integration (Fragment Rendering)
+## SvelteKit-Style File-Based Routing
 
-HTMX works by swapping HTML fragments into the DOM. With PTEGo, you can render just a single `|fragment|` block out of a full template.
+PTEGo contains an built-in file-based router. You organize your pages in folders, and the engine automatically builds URL paths, matches routes, and extracts path parameters.
 
-**Template (`templates/pages/dashboard.pte`):**
-```html
-<div class="container">
-    <h1>Dashboard</h1>
-    
-    |fragment metrics-card|
-        <div id="metrics" class="card">
-            <h3>Active Users</h3>
-            <p>|activeUsersCount|</p>
-        </div>
-    |/fragment|
-</div>
+### 1. Directory Structure
+Create a routes directory (e.g. `pte-routes`):
+```text
+pte-routes/
+├── +page.pte                      // Maps to "/"
+├── about/
+│   └── +page.pte                  // Maps to "/about"
+└── products/
+    └── [id]/
+        └── +page.pte              // Maps to "/products/:id" (dynamic parameter)
 ```
 
-**Go Handler:**
+### 2. HTTP Server Routing Setup
 ```go
-func handleMetricsUpdate(w http.ResponseWriter, r *http.Request) {
-    data := map[string]any{"activeUsersCount": 1420}
+package main
 
-    // Only compiles and renders the "metrics-card" fragment block
-    engine.RenderFragment(w, "pages/dashboard", "metrics-card", data)
+import (
+	"net/http"
+	"pte"
+)
+
+func main() {
+	engine := pte.NewEngine("")
+	router, _ := pte.NewFileRouter(engine, "./pte-routes")
+
+	// Register data loaders to inject database maps into specific route contexts
+	router.RegisterDataLoader("/products/[id]", func(r *http.Request, params map[string]string) (map[string]any, error) {
+		id := params["id"]
+		return map[string]any{
+			"product": map[string]any{"id": id, "name": "Coffee Maker", "price": 89.99},
+		}, nil
+	})
+
+	// Optional Authentication Check hook mapping to |page auth=true roles='...'| metadata
+	router.AuthCheck = func(r *http.Request, requiredRoles []string) (bool, int, string) {
+		// Enforce auth logic
+		return true, 0, ""
+	}
+
+	// ServeHTTP matches paths, loads data, validates auth, and renders pages
+	http.ListenAndServe(":8080", router)
 }
 ```
 
 ---
 
-## Template Syntax & Feature Reference
+## Feature Reference (Prioritized by Frequency of Use)
 
-### 1. Variables & Escaping
-- **Default HTML Escaping**: `|name|`
+Below is the complete list of PTEGo features, ordered from the **most-frequently-used** core template syntax to **advanced/niche** structures.
+
+### 1. Variables, Escaping, and Output Modes (Essential)
+Direct output injection with automatic escaping depending on context.
+- **Default HTML Escaping** (prevents XSS): `|name|`
 - **Raw/Trusted HTML**: `|html blogBody|`
-- **HTML Attributes**: `<input value="|attr user.name|">`
-- **URL Encoding**: `<a href="/search?q=|url query|">Search</a>`
-- **JSON Encoding**: `var data = |json product|;`
-- **Conditional Attribute Shorthand & Cleanup**:
-  ```html
-  <input class="form-input" |attr checked if completed|>
-  ```
-  If `completed` is true, renders `<input class="form-input" checked>`. If false, automatically strips the attribute and cleans up any redundant whitespace so the result is exactly `<input class="form-input">`.
+- **HTML Attribute Escaping**: `<input value="|attr user.name|">`
+- **URL Parameter Encoding**: `<a href="/search?q=|url query|">Search</a>`
+- **JSON Encoding**: `const config = |json product|;`
 
-  You can also bind values to attributes conditionally:
-  ```html
-  <div |attr class=btnClass if hasError|>
-  ```
-  Renders `<div class="btn-danger">` if `hasError` evaluates to true.
-
-
-
-### 2. Optional Chaining & Null Coalescing
-Avoid errors on missing nested variables:
+### 2. Optional Chaining & Null Coalescing (Highly Used)
+Avoid rendering crashes or nil-pointer checks when variables or sub-properties are missing:
 ```html
 <span>Welcome, |user?.Profile?.DisplayName ?? 'Guest'|!</span>
 ```
 
-### 3. Ternary Operator
-```html
-<div class="|user.Active ? 'status-active' : 'status-inactive'|">
-    |user.Name|
-</div>
-```
-
-### 4. Conditionals
+### 3. Conditionals (Highly Used)
+Conditional checks support standard value comparisons:
 ```html
 |if user.role == 'admin'|
     <p>Welcome Admin!</p>
@@ -288,128 +210,188 @@ Avoid errors on missing nested variables:
 |/if|
 ```
 
-### 5. Loops (Each)
-Iterate over slices, arrays, or maps.
-- **Slice Iteration**:
+### 4. Iteration and Loops (Highly Used)
+Loop through arrays, slices, or map structures.
+- **Slice Loop with Iteration Metadata**:
 ```html
 <ul>
     |each item in items|
-        <li>|each.count|. |item.name||separator|, |/separator|</li>
+        <li>|each.count| of |each.total|: |item.name||separator|, |/separator|</li>
     |else|
         <li>No items available.</li>
     |/each|
 </ul>
 ```
-*Note: `each` metadata includes `index` (0-based), `count` (1-based), `first` (bool), `last` (bool), and `total` (int).*
+*Note: The local `each` scope provides `index` (0-based), `count` (1-based), `first` (bool), `last` (bool), and `total` (int).*
+*Note: The optional `|separator|` block renders delimiters only between items.*
 
-- **Map Iteration**:
+- **Map Loop**:
 ```html
 |each key, val in myMap|
     <p>|key|: |val|</p>
 |/each|
 ```
 
-### 6. Switch & Case
-Supports automatic break and explicit fallthrough:
-```html
-|switch status|
-    |case 'pending'|
-        <span class="warning">Pending approval</span>
-    |case 'approved'|
-        <span class="success">Approved</span>
-        |fallthrough|
-    |case 'notified'|
-        <span class="info">User notified</span>
-    |default|
-        <span>Unknown status</span>
-|/switch|
-```
-
-### 7. Filters
-Transform outputs using filters:
-- **Case Formatting**: `|name, upper|`, `|name, lower|`, `|name, capitalize|`
-- **URL Slugification**: `|title, slug|` (e.g. `"Rice & Beans!"` becomes `"rice-beans"`)
-- **Strings**: `|name, trim|`
-- **Collection Length**: `|items, length|`
-- **Defaults**: `|description, default 'No description provided'|`
-- **Currency Format**: `|price, currency '₱'|` (e.g. `12345.6` becomes `₱12,345.60`)
-- **Number Formats**: `|weight, number '#,##0.##'|`
-- **Temporal Formats**: `|createdAt, datetime 'yyyy-MM-dd HH:mm:ss'|`
-
-### 8. Layouts, Sections, and Yields
-Define layouts and fill sections from child pages.
+### 5. Layout Inheritance & Yield Sections (Highly Used)
+Wrap pages inside master templates to reuse headers, sidebars, and scripts.
 
 **Layout (`templates/layouts/main.pte`):**
 ```html
 <html>
     <head><title>|yield title|</title></head>
-    <body>
-        |yield body|
-    </body>
+    <body>|yield content|</body>
 </html>
 ```
 
-**Child Template (`templates/pages/info.pte`):**
+**Child Template:**
 ```html
 |layout layouts/main|
-
 |section title|About Us|/section|
-
-|section body|
+|section content|
     <h1>Who We Are</h1>
-    <p>PTEGo makes templating fun.</p>
 |/section|
 ```
 
-### 9. Components & Slots
-Define reusable UI components.
-
-**Component (`templates/components/alert.pte`):**
+### 6. File Includes & Scope Binding (Commonly Used)
+Include partial file fragments directly. You can pass scoped sub-models using the `with` statement:
 ```html
-<div class="alert">
-    <h4>|slot title|</h4>
+|include partials/header|
+|include partials/navbar with navItems|
+```
+
+### 7. Formatter Pipe Filters (Commonly Used)
+Modify output variables directly using formatting chains:
+- **Case Transformations**: `|name, lower, capitalize|`
+- **URL Slugification**: `|title, slug|` (e.g. `"Hot Chocolate!"` becomes `"hot-chocolate"`)
+- **Default fallback**: `|description, default 'No description'|`
+- **Currency formatting**: `|price, currency '₱'|` (e.g. `123.4` -> `₱123.40`)
+- **Number formatting**: `|weight, number '#,##0.##'|`
+- **Date/Time formatting**: `|createdAt, datetime 'yyyy-MM-dd HH:mm:ss'|`
+
+### 8. Conditional Attribute Shorthand & Whitespace Cleanup (Commonly Used)
+Allows compact attribute bindings and automatically cleans up extra trailing spacing if the condition evaluates to `false`.
+
+```html
+<!-- Renders class="form-input checked" if completed, else class="form-input" with no trailing spacing -->
+<input class="form-input" |attr checked if completed|>
+
+<!-- Supports key-value attributes -->
+<div |attr class=errorClass if hasError|>
+```
+
+### 9. Page Options and Routing Metadata (Commonly Used)
+Declare route options directly inside the template. The `FileRouter` resolves and enforces these parameters:
+```html
+|page title = "Settings Panel"|
+|page cache = "public, max-age=3600"|
+|page auth = true|
+|page roles = ["ADMIN"]|
+```
+
+### 10. Request Page Context (Commonly Used in Routing)
+Router pages can access the built-in `page` context containing the request states:
+```html
+<p>Method: |page.Method|</p>
+<p>Path: |page.RequestURI|</p>
+<p>User-Agent: |page.Headers.User-Agent|</p>
+<p>Session Cookie: |page.Cookies.session_id|</p>
+```
+
+### 11. Reusable Components & Custom Slots (Occasionally Used)
+Define custom encapsulated components.
+
+**Component (`templates/components/card.pte`):**
+```html
+<div class="card">
+    <h3>|slot header|</h3>
     <div>|slot body|</div>
 </div>
 ```
 
 **Caller Template:**
 ```html
-|component components/alert|
-    |slot title|Success!|/slot|
-    |slot body|<p>Your changes have been saved.</p>|/slot|
+|component components/card|
+    |slot header|Featured Item|/slot|
+    |slot body|<p>Available in store.</p>|/slot|
 |/component|
 ```
 
-### 10. Macros
-Declare reusable functional template blocks:
+### 12. HTMX Inline Template Fragments (Occasionally Used)
+Return lightweight, targeted HTML payload snippets for specific HTMX updates instead of the full layout:
+```html
+<div>
+    <h1>Tasks Dashboard</h1>
+    |fragment list-zone|
+        <ul id="task-list">
+            |each t in tasks|<li>|t|</li>|/each|
+        </ul>
+    |/fragment|
+</div>
+```
+```go
+// Renders only the <ul> block, skipping the surrounding header tags!
+engine.RenderFragment(w, "pages/tasks", "list-zone", data)
+```
+
+### 13. Template Comments (Occasionally Used)
+Developer notes are completely stripped out at compile time:
+- **Single-Line**: `|# Comment text |`
+- **Multi-Line**:
+```html
+|#
+   Block comment.
+   Spans multiple lines.
+#|
+```
+- **Old Style**: `|-- Retro comments are also supported --|`
+
+### 14. Error Boundaries: Attempt / Recover (Rarely Used)
+Isolate sections from rendering errors and prevent page crashes:
+```html
+|attempt|
+    <p>Details: |user.profile.details.description|</p>
+|recover as err|
+    <p class="alert-error">Failed loading details: |err|</p>
+|/attempt|
+```
+
+### 15. Block-Level HTML Minification (Rarely Used)
+Compress specific chunks of layout text inside templates:
+```html
+|minify|
+    <div class="container">
+        <span>Compressed Text</span>
+    </div>
+|/minify|
+```
+
+### 16. Macros (Rarely Used)
+Define local template functions inside the page:
 ```html
 |macro badge(text, color)|
     <span class="badge badge-|color|">|text|</span>
 |/macro|
 
-<!-- Call the macro -->
 |call badge('New', 'blue')|
 ```
 
-### 11. Attempt & Recover
-Isolate sections from rendering crashes/nil-pointer errors:
+### 17. Strongly Typed Model Declarations (Rarely Used)
+Provide type checking support for IDE plugins:
 ```html
-|attempt|
-    <!-- If user is nil, accessing nested properties will error out -->
-    <p>Profile: |user.Profile.Detail.Text|</p>
-|recover as err|
-    <p class="error-log">Failed to load profile details: |err|</p>
-|/attempt|
+|model com.example.model.TaskPageModel|
 ```
 
-### 12. Template Comments
-Write developer comments that are completely stripped out at compile time:
-- **Single-Line Comment**: `|# This comment will not render |`
-- **Multi-Line Comment**:
-```html
-|#
-   This is a block comment.
-   It spans multiple lines.
-#|
+---
+
+## Engine Configurations
+
+Set global behaviors during engine instantiation:
+
+```go
+engine := pte.NewEngine(
+    "./templates",
+    pte.WithSuffix(".pte"),
+    pte.WithMinify(true),   // Globally minifies all rendered output
+    pte.WithPrettify(true), // Globally indents HTML output
+)
 ```
-- **Reference Comment**: `|-- Old style comments are also supported --|`
