@@ -1,0 +1,33 @@
+# Binaries and templates compiled files
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Coverage / Profiling
+*.prof
+cover.out
+
+# Dependency directories (suggested to let 'go get' fetch them)
+vendor/
+
+# IDEs/Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS metadata files
+.DS_Store
+Thumbs.db
