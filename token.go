@@ -49,6 +49,10 @@ const (
 	TokenAlpine        TokenType = "ALPINE"
 	TokenState         TokenType = "STATE"
 	TokenAlpineAttr    TokenType = "ALPINE_ATTR"
+	TokenFor           TokenType = "FOR"
+	TokenEndFor        TokenType = "END_FOR"
+	TokenContinue       TokenType = "CONTINUE"
+	TokenBreak          TokenType = "BREAK"
 )
 
 type Token struct {

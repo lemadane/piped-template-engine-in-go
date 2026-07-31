@@ -125,6 +125,14 @@ func (l *Lexer) classifyToken(content string) TokenType {
 		return TokenEach
 	} else if content == "/each" {
 		return TokenEndEach
+	} else if strings.HasPrefix(content, "for ") {
+		return TokenFor
+	} else if content == "/for" {
+		return TokenEndFor
+	} else if content == "continue" {
+		return TokenContinue
+	} else if content == "break" {
+		return TokenBreak
 	} else if strings.HasPrefix(content, "switch ") {
 		return TokenSwitch
 	} else if strings.HasPrefix(content, "case ") {

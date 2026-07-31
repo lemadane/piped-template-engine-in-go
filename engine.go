@@ -341,6 +341,14 @@ func (e *Engine) findFragmentNode(node Node, name string) Node {
 		return nil
 	}
 
+	if layout, ok := node.(*LayoutNode); ok {
+		for _, sec := range layout.Sections {
+			if found := e.findFragmentNode(sec, name); found != nil {
+				return found
+			}
+		}
+	}
+
 	if frag, ok := node.(*FragmentNode); ok {
 		if frag.Name == name {
 			return frag

@@ -398,10 +398,127 @@ Supports logical operators (`and`, `or`, `not`, `nand`, `nor`) and comparison op
 ---
 
 ### 5. Iteration and Loops (Highly Used)
-Loop through arrays, slices, or map structures with built-in iteration metadata, separator delimiters, and empty collection fallbacks.
+Loop through arrays, slices, map structures, or numeric ranges with built-in iteration metadata, separator delimiters, `break`/`continue` control flow, and empty-state fallbacks.
 
-#### A. Slice Loop & Iteration Metadata
-Access iteration state properties (`index`, `count`, `first`, `last`, `total`) using the local `each` scope inside any loop:
+#### Quick Reference
+
+| Directive | Description | Example Syntax |
+| :--- | :--- | :--- |
+| **`for ... from ... to ...`** | Numeric range loop (auto-detects increment/decrement) | `\|for i from 1 to 10\|` |
+| **`for ... step ...`** | Range loop with custom positive step distance | `\|for i from 10 to 1 step 2\|` |
+| **`continue`** | Skips remainder of current iteration, proceeds to next | `\|if i == 5\|\|continue\|\|/if\|` |
+| **`break`** | Immediately terminates nearest enclosing loop | `\|if i == 6\|\|break\|\|/if\|` |
+| **`else`** | Empty-state block (runs only when 0 iterations performed) | `\|else\|<p>No items found</p>\|` |
+| **`each ... in ...`** | Collection iteration over slice, array, or map | `\|each item in items\|` |
+| **`separator`** | Renders delimiter between loop items (skips after last) | `\|separator\|, \|/separator\|` |
+
+---
+
+#### A. Range-Based `for` Loop (`|for ... from ... to ...|`)
+Execute a numeric range loop over integer boundaries. PTE automatically determines the direction:
+* **Ascending direction**: when `start <= end` (increments by `step`).
+* **Descending direction**: when `start > end` (decrements by `step`).
+* **Inclusive landing**: ending value is inclusive only when the step sequence lands on it exactly.
+* **Positive step**: `step` represents a positive distance (defaults to `1` when omitted; zero or negative step returns a compilation error).
+
+**Basic Range (Ascending):**
+```html
+|for i from 1 to 5|
+    <span>|i|</span>
+|/for|
+<!-- Output: 1 2 3 4 5 -->
+```
+
+**Custom Step Distance:**
+```html
+|for i from 1 to 10 step 2|
+    <span>|i|</span>
+|/for|
+<!-- Output: 1 3 5 7 9 -->
+```
+
+**Descending Range:**
+```html
+|for i from 10 to 1 step 2|
+    <span>|i|</span>
+|/for|
+<!-- Output: 10 8 6 4 2 -->
+```
+
+```html
+|for i from 10 to 1 step 3|
+    <span>|i|</span>
+|/for|
+<!-- Output: 10 7 4 1 -->
+```
+
+**Expression-Based Boundaries and Step:**
+Start, end, and step expressions support integer variables, length lookups, and arithmetic. Expressions are evaluated once before entering the loop:
+```html
+|for i from startIndex to items.size() - 1 step interval|
+    <span>Item: |i|</span>
+|/for|
+```
+
+---
+
+#### B. Loop Control Directives (`|continue|` and `|break|`)
+Control execution inside the nearest enclosing `for` or `each` loop:
+
+* **`|continue|`**: Skips the remainder of the current iteration and proceeds directly to the next iteration of the nearest enclosing loop. Content after `|continue|` in the same iteration does not render.
+```html
+|for i from 1 to 10|
+    |if i == 5|
+        |continue|
+    |/if|
+    <span>|i|</span>
+|/for|
+<!-- Renders: 1 2 3 4 6 7 8 9 10 (skips 5) -->
+```
+
+* **`|break|`**: Immediately terminates execution of the nearest enclosing loop. Content after `|break|` does not render. Breaking an inner loop does not affect an outer loop.
+```html
+|for i from 1 to 10|
+    |if i == 6|
+        |break|
+    |/if|
+    <span>|i|</span>
+|/for|
+<!-- Renders: 1 2 3 4 5 -->
+```
+
+* **Scope Isolation**: Using `|continue|` or `|break|` outside a loop produces a compilation error.
+
+---
+
+#### C. Empty-State `else` Block (`|else|`)
+Support an optional `|else|` block for both `for` and `each` loops:
+
+```html
+|for i from start to end|
+    <span>|i|</span>
+|else|
+    <p>The range is empty.</p>
+|/for|
+```
+
+```html
+|each user in users|
+    <p>|user.name|</p>
+|else|
+    <p>No users found.</p>
+|/each|
+```
+
+**Required Semantics:**
+* Executes **only** when the loop performs **zero iterations** (e.g. empty/nil collection or empty range).
+* Does **not** execute if the loop performed 1 or more iterations, even if every iteration executed `|continue|` or if `|break|` terminated the loop mid-way.
+* **Block Scoped**: loop variables are strictly scoped to the loop body and are unavailable inside `|else|`.
+
+---
+
+#### D. Slice Loop & Iteration Metadata (`|each item in items|`)
+Access iteration state properties (`index`, `count`, `first`, `last`, `total`) using the local `each` scope inside any `each` loop:
 ```html
 |each item in items|
     <div class="|each.first ? 'header-item' : ''|">
@@ -415,32 +532,28 @@ Access iteration state properties (`index`, `count`, `first`, `last`, `total`) u
 * **`each.last`**: boolean `true` on the final item
 * **`each.total`**: total count of elements in the collection
 
-#### B. Loop Separators (`|separator| ... |/separator|`)
-Render delimiters (like commas, breadcrumb slashes, or HTML dividers) between loop iterations automatically, skipping the delimiter after the final item:
+---
+
+#### E. Loop Separators (`|separator| ... |/separator|`)
+Render delimiters (such as commas, breadcrumb slashes, or HTML dividers) between loop iterations automatically, omitting the delimiter after the final item:
 ```html
 <!-- Data: {"skills": ["HTML", "CSS", "JS"]} -->
 <!-- Output: HTML / CSS / JS -->
 |each skill in skills||skill||separator| / |/separator||/each|
+
+<!-- Also works inside range-based for loops -->
+|for i from 1 to 5||i||separator|, |/separator||/for|
+<!-- Output: 1, 2, 3, 4, 5 -->
 ```
 
-#### C. Map Key-Value Loop
+---
+
+#### F. Map Key-Value Loop
 Iterate over Go map key-value pairs:
 ```html
 |each key, val in myMap|
     <p>|key|: |val|</p>
 |/each|
-```
-
-#### D. Empty Collection Fallback (`|else|`)
-Render fallback HTML when a slice or map is empty or nil:
-```html
-<ul>
-    |each item in items|
-        <li>|item.name|</li>
-    |else|
-        <li>No items available.</li>
-    |/each|
-</ul>
 ```
 
 ---

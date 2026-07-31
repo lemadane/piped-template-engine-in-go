@@ -139,6 +139,36 @@ func (e *Evaluator) evaluateValue(expression string, context *Context) (any, err
 		return e.evaluateFilteredExpression(filtered, context)
 	}
 
+	if arith := e.findBinaryArithmetic(trimmedExpression); arith != nil {
+		leftVal, err := e.evaluateValue(arith.left, context)
+		if err != nil {
+			return nil, err
+		}
+		rightVal, err := e.evaluateValue(arith.right, context)
+		if err != nil {
+			return nil, err
+		}
+		leftNum, isLeftNum := toFloat64(leftVal)
+		rightNum, isRightNum := toFloat64(rightVal)
+		if isLeftNum && isRightNum {
+			switch arith.operator {
+			case "+":
+				return leftNum + rightNum, nil
+			case "-":
+				return leftNum - rightNum, nil
+			case "*":
+				return leftNum * rightNum, nil
+			case "/":
+				if rightNum == 0 {
+					return nil, fmt.Errorf("division by zero")
+				}
+				return leftNum / rightNum, nil
+			case "%":
+				return int64(leftNum) % int64(rightNum), nil
+			}
+		}
+	}
+
 	if ternary := e.findTernaryExpression(trimmedExpression); ternary != nil {
 		condBool, err := e.EvaluateBoolean(ternary.condition, context)
 		if err != nil {
@@ -1079,11 +1109,21 @@ func (e *Evaluator) readProperty(source any, name string, optional bool) (any, e
 		val = val.Elem()
 	}
 
+	cleanName := strings.TrimSuffix(name, "()")
+	if val.Kind() == reflect.Slice || val.Kind() == reflect.Array || val.Kind() == reflect.String {
+		if cleanName == "size" || cleanName == "length" || cleanName == "count" {
+			return val.Len(), nil
+		}
+	}
+
 	if val.Kind() == reflect.Map {
 		mapKey := reflect.ValueOf(name)
 		mapVal := val.MapIndex(mapKey)
 		if mapVal.IsValid() {
 			return mapVal.Interface(), nil
+		}
+		if cleanName == "size" || cleanName == "length" || cleanName == "count" {
+			return val.Len(), nil
 		}
 		return nil, nil
 	}
@@ -1249,4 +1289,110 @@ func capitalize(s string) string {
 		return ""
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+type binaryArithDesc struct {
+	left     string
+	operator string
+	right    string
+}
+
+func (e *Evaluator) findBinaryArithmetic(expression string) *binaryArithDesc {
+	insideSingleQuote := false
+	insideDoubleQuote := false
+	parenthesisDepth := 0
+	bracketDepth := 0
+
+	for index := len(expression) - 1; index >= 0; index-- {
+		current := expression[index]
+
+		if current == '\'' && !insideDoubleQuote {
+			insideSingleQuote = !insideSingleQuote
+			continue
+		}
+		if current == '"' && !insideSingleQuote {
+			insideDoubleQuote = !insideDoubleQuote
+			continue
+		}
+		if insideSingleQuote || insideDoubleQuote {
+			continue
+		}
+
+		if current == ')' {
+			parenthesisDepth++
+			continue
+		}
+		if current == '(' {
+			parenthesisDepth--
+			continue
+		}
+		if current == ']' {
+			bracketDepth++
+			continue
+		}
+		if current == '[' {
+			bracketDepth--
+			continue
+		}
+		if parenthesisDepth != 0 || bracketDepth != 0 {
+			continue
+		}
+
+		if (current == '+' || current == '-') && index > 0 && index < len(expression)-1 {
+			leftPart := strings.TrimSpace(expression[:index])
+			if leftPart != "" && !strings.HasSuffix(leftPart, "+") && !strings.HasSuffix(leftPart, "-") && !strings.HasSuffix(leftPart, "*") && !strings.HasSuffix(leftPart, "/") && !strings.HasSuffix(leftPart, "(") && !strings.HasSuffix(leftPart, ",") {
+				return &binaryArithDesc{
+					left:     leftPart,
+					operator: string(current),
+					right:    strings.TrimSpace(expression[index+1:]),
+				}
+			}
+		}
+	}
+
+	for index := len(expression) - 1; index >= 0; index-- {
+		current := expression[index]
+
+		if current == '\'' && !insideDoubleQuote {
+			insideSingleQuote = !insideSingleQuote
+			continue
+		}
+		if current == '"' && !insideSingleQuote {
+			insideDoubleQuote = !insideDoubleQuote
+			continue
+		}
+		if insideSingleQuote || insideDoubleQuote {
+			continue
+		}
+
+		if current == ')' {
+			parenthesisDepth++
+			continue
+		}
+		if current == '(' {
+			parenthesisDepth--
+			continue
+		}
+		if current == ']' {
+			bracketDepth++
+			continue
+		}
+		if current == '[' {
+			bracketDepth--
+			continue
+		}
+		if parenthesisDepth != 0 || bracketDepth != 0 {
+			continue
+		}
+
+		if (current == '*' || current == '/' || current == '%') && index > 0 && index < len(expression)-1 {
+			return &binaryArithDesc{
+				left:     strings.TrimSpace(expression[:index]),
+				operator: string(current),
+				right:    strings.TrimSpace(expression[index+1:]),
+			}
+		}
+	}
+
+	return nil
 }

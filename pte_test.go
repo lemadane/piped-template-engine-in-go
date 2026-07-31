@@ -628,3 +628,337 @@ func TestAlpineTags(t *testing.T) {
 		t.Errorf("expected x-show and x-cloak rendering, got %q", showRes)
 	}
 }
+
+func TestRangeForAndControlFlow(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("ascending range default step", func(t *testing.T) {
+		tmpl := `|for i from 1 to 5||i||separator|,|/separator||/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "1,2,3,4,5" {
+			t.Errorf("expected '1,2,3,4,5', got %q", got)
+		}
+	})
+
+	t.Run("ascending range custom step and reachable boundary", func(t *testing.T) {
+		tmpl := `|for i from 1 to 5 step 2||i||separator|,|/separator||/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "1,3,5" {
+			t.Errorf("expected '1,3,5', got %q", got)
+		}
+	})
+
+	t.Run("ascending range unreachable boundary", func(t *testing.T) {
+		tmpl := `|for i from 1 to 6 step 2||i||separator|,|/separator||/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "1,3,5" {
+			t.Errorf("expected '1,3,5', got %q", got)
+		}
+	})
+
+	t.Run("descending range custom step (10 to 1 step 2)", func(t *testing.T) {
+		tmpl := `|for i from 10 to 1 step 2||i||separator|, |/separator||/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "10, 8, 6, 4, 2" {
+			t.Errorf("expected '10, 8, 6, 4, 2', got %q", got)
+		}
+	})
+
+	t.Run("descending range custom step (10 to 1 step 3)", func(t *testing.T) {
+		tmpl := `|for i from 10 to 1 step 3||i||separator|, |/separator||/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "10, 7, 4, 1" {
+			t.Errorf("expected '10, 7, 4, 1', got %q", got)
+		}
+	})
+
+	t.Run("equal start and end", func(t *testing.T) {
+		tmpl := `|for i from 5 to 5||i||/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "5" {
+			t.Errorf("expected '5', got %q", got)
+		}
+	})
+
+	t.Run("expression based bounds and step", func(t *testing.T) {
+		tmpl := `|for i from start to items.size() - 1 step interval||i| |/for|`
+		data := map[string]any{
+			"start":    2,
+			"items":    []int{10, 20, 30, 40, 50, 60, 70, 80},
+			"interval": 2,
+		}
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "2 4 6" {
+			t.Errorf("expected '2 4 6', got %q", got)
+		}
+	})
+
+	t.Run("continue during first, middle, final iterations and content after continue", func(t *testing.T) {
+		tmpl := `|for i from 1 to 5||if i == 1 or i == 3 or i == 5||continue|UNRENDERED|/if||i| |/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "2 4" {
+			t.Errorf("expected '2 4', got %q", got)
+		}
+	})
+
+	t.Run("break during first iteration and content after break", func(t *testing.T) {
+		tmpl := `|for i from 1 to 5||if i == 1||break|UNRENDERED|/if||i| |/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("break during middle iteration (6)", func(t *testing.T) {
+		tmpl := `|for i from 1 to 10||if i == 6||break||/if||i| |/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "1 2 3 4 5" {
+			t.Errorf("expected '1 2 3 4 5', got %q", got)
+		}
+	})
+
+	t.Run("break during final iteration", func(t *testing.T) {
+		tmpl := `|for i from 1 to 3||if i == 3||break||/if||i| |/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "1 2" {
+			t.Errorf("expected '1 2', got %q", got)
+		}
+	})
+
+	t.Run("nested loop break and continue isolation", func(t *testing.T) {
+		tmpl := `|for i from 1 to 3|Outer |i|: [|for j from 1 to 5||if j == 2||continue||/if||if j == 4||break||/if||j| |/for|] |/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		expected := "Outer 1: [1 3 ] Outer 2: [1 3 ] Outer 3: [1 3 ] "
+		if got := buf.String(); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("loop variable scoping and non-leakage", func(t *testing.T) {
+		tmpl := `Outside before: '|i|' |for i from 1 to 3||i||else|Else: '|i|'|/for| Outside after: '|i|'`
+		data := map[string]any{"i": "outer"}
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, data); err != nil {
+			t.Fatal(err)
+		}
+		expected := "Outside before: 'outer' 123 Outside after: 'outer'"
+		if got := buf.String(); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("for else block - not rendered when iterations executed", func(t *testing.T) {
+		tmpl := `|for i from 1 to 3||i||else|Empty|/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "123" {
+			t.Errorf("expected '123', got %q", got)
+		}
+	})
+
+	t.Run("for else block - not rendered when loop broke after iteration started", func(t *testing.T) {
+		tmpl := `|for i from 1 to 5||if i == 1||break||/if||else|Empty|/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("for else block - not rendered when all iterations continued", func(t *testing.T) {
+		tmpl := `|for i from 1 to 3||continue||else|Empty|/for|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("each with non-empty collection", func(t *testing.T) {
+		tmpl := `|each item in items||item||else|No items|/each|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, map[string]any{"items": []int{10, 20}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "1020" {
+			t.Errorf("expected '1020', got %q", got)
+		}
+	})
+
+	t.Run("each with empty collection renders else", func(t *testing.T) {
+		tmpl := `|each item in items||item||else|No items|/each|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, map[string]any{"items": []int{}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "No items" {
+			t.Errorf("expected 'No items', got %q", got)
+		}
+	})
+
+	t.Run("each with null collection renders else", func(t *testing.T) {
+		tmpl := `|each item in items||item||else|No items|/each|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, map[string]any{"items": nil}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "No items" {
+			t.Errorf("expected 'No items', got %q", got)
+		}
+	})
+
+	t.Run("each with break after at least one iteration does not render else", func(t *testing.T) {
+		tmpl := `|each item in items||if item == 2||break||/if||item||else|No items|/each|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, map[string]any{"items": []int{1, 2, 3}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "1" {
+			t.Errorf("expected '1', got %q", got)
+		}
+	})
+
+	t.Run("each with continue for every item does not render else", func(t *testing.T) {
+		tmpl := `|each item in items||continue||else|No items|/each|`
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, tmpl, map[string]any{"items": []int{1, 2, 3}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+}
+
+func TestRangeForAndControlFlowErrors(t *testing.T) {
+	engine := NewEngine("")
+
+	tests := []struct {
+		name        string
+		template    string
+		data        map[string]any
+		errContains string
+	}{
+		{
+			name:        "zero step error",
+			template:    `|for i from 1 to 5 step 0||i||/for|`,
+			errContains: "zero or negative step",
+		},
+		{
+			name:        "negative step error",
+			template:    `|for i from 1 to 5 step -1||i||/for|`,
+			errContains: "zero or negative step",
+		},
+		{
+			name:        "continue outside loop",
+			template:    `|if true||continue||/if|`,
+			errContains: "continue| outside a loop",
+		},
+		{
+			name:        "break outside loop",
+			template:    `|if true||break||/if|`,
+			errContains: "break| outside a loop",
+		},
+		{
+			name:        "else outside for or each",
+			template:    `|else|`,
+			errContains: "outside for",
+		},
+		{
+			name:        "multiple else in for loop",
+			template:    `|for i from 1 to 5||i||else|E1|else|E2|/for|`,
+			errContains: "multiple |else| blocks",
+		},
+		{
+			name:        "multiple else in each loop",
+			template:    `|each item in items||item||else|E1|else|E2|/each|`,
+			errContains: "multiple |else| blocks",
+		},
+		{
+			name:        "missing loop variable",
+			template:    `|for from 1 to 5||/for|`,
+			errContains: "missing loop variable",
+		},
+		{
+			name:        "missing from",
+			template:    `|for i 1 to 5||/for|`,
+			errContains: "missing from",
+		},
+		{
+			name:        "missing to",
+			template:    `|for i from 1 5||/for|`,
+			errContains: "missing to",
+		},
+		{
+			name:        "missing closing for",
+			template:    `|for i from 1 to 5||i|`,
+			errContains: "missing closing |/for|",
+		},
+		{
+			name:        "invalid start expression",
+			template:    `|for i from invalidVar to 5||i||/for|`,
+			data:        map[string]any{},
+			errContains: "invalid start expression",
+		},
+		{
+			name:        "misplaced loop directive",
+			template:    `|for i from 1 to 5||i||/each|`,
+			errContains: "misplaced loop or block directive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := engine.Render(&buf, tt.template, tt.data)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.errContains)
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("expected error containing %q, got %v", tt.errContains, err)
+			}
+		})
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -17,7 +18,11 @@ type Node interface {
 	Render(ctx *Context, w io.Writer) error
 }
 
-var errConditionalAttributeSkipped = errors.New("conditional attribute skipped")
+var (
+	errConditionalAttributeSkipped = errors.New("conditional attribute skipped")
+	errBreak                       = errors.New("break signal")
+	errContinue                    = errors.New("continue signal")
+)
 
 // BlockNode holds a list of child nodes
 type BlockNode struct {
@@ -333,8 +338,11 @@ func (n *EachNode) Render(ctx *Context, w io.Writer) error {
 	}
 
 	items, isMap, total := n.toIterable(rawVal)
+	executedAtLeastOnce := false
+
 	if total > 0 {
 		for i, item := range items {
+			executedAtLeastOnce = true
 			isLast := (i == total-1)
 			loopMeta := map[string]any{
 				"index": i,
@@ -359,17 +367,32 @@ func (n *EachNode) Render(ctx *Context, w io.Writer) error {
 			scope["each"] = loopMeta
 
 			subContext := ctx.SubContext(scope)
-			if err := n.BodyBlock.Render(subContext, w); err != nil {
+			err := n.BodyBlock.Render(subContext, w)
+			if errors.Is(err, errBreak) {
+				break
+			}
+			if errors.Is(err, errContinue) {
+				continue
+			}
+			if err != nil {
 				return err
 			}
 
 			if n.SeparatorNode != nil && !isLast {
 				if err := n.SeparatorNode.Render(subContext, w); err != nil {
+					if errors.Is(err, errBreak) {
+						break
+					}
+					if errors.Is(err, errContinue) {
+						continue
+					}
 					return err
 				}
 			}
 		}
-	} else if n.ElseBlock != nil {
+	}
+
+	if !executedAtLeastOnce && n.ElseBlock != nil {
 		return n.ElseBlock.Render(ctx, w)
 	}
 
@@ -766,6 +789,9 @@ func (n *AttemptNode) Render(ctx *Context, w io.Writer) error {
 	var buf bytes.Buffer
 	err := n.Body.Render(ctx, &buf)
 	if err != nil {
+		if errors.Is(err, errBreak) || errors.Is(err, errContinue) {
+			return err
+		}
 		if n.RecoverBlock != nil {
 			nextContext := ctx
 			if n.ErrorVarName != "" {
@@ -778,6 +804,160 @@ func (n *AttemptNode) Render(ctx *Context, w io.Writer) error {
 
 	_, writeErr := w.Write(buf.Bytes())
 	return writeErr
+}
+
+// ForNode renders range-based loops
+type ForNode struct {
+	VarName       string
+	StartExpr     string
+	EndExpr       string
+	StepExpr      string
+	BodyBlock     Node
+	ElseBlock     Node
+	SeparatorNode Node
+	Evaluator     *Evaluator
+	Position      int
+}
+
+func (n *ForNode) Render(ctx *Context, w io.Writer) error {
+	startVal, err := evaluateInt(n.Evaluator, n.StartExpr, ctx)
+	if err != nil {
+		return fmt.Errorf("invalid start expression in for loop at %d: %w", n.Position, err)
+	}
+	endVal, err := evaluateInt(n.Evaluator, n.EndExpr, ctx)
+	if err != nil {
+		return fmt.Errorf("invalid end expression in for loop at %d: %w", n.Position, err)
+	}
+	stepVal := int64(1)
+	if n.StepExpr != "" {
+		stepVal, err = evaluateInt(n.Evaluator, n.StepExpr, ctx)
+		if err != nil {
+			return fmt.Errorf("invalid step expression in for loop at %d: %w", n.Position, err)
+		}
+	}
+
+	if stepVal <= 0 {
+		return fmt.Errorf("zero or negative step in for loop at %d: %d", n.Position, stepVal)
+	}
+
+	executedAtLeastOnce := false
+
+	if startVal <= endVal {
+		total := (endVal-startVal)/stepVal + 1
+		idx := int64(0)
+		for i := startVal; i <= endVal; i += stepVal {
+			executedAtLeastOnce = true
+			isLast := (idx == total-1)
+			idx++
+			scope := map[string]any{
+				n.VarName: i,
+			}
+			subContext := ctx.SubContext(scope)
+			err := n.BodyBlock.Render(subContext, w)
+			if errors.Is(err, errBreak) {
+				break
+			}
+			if errors.Is(err, errContinue) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+
+			if n.SeparatorNode != nil && !isLast {
+				if err := n.SeparatorNode.Render(subContext, w); err != nil {
+					if errors.Is(err, errBreak) {
+						break
+					}
+					if errors.Is(err, errContinue) {
+						continue
+					}
+					return err
+				}
+			}
+		}
+	} else {
+		total := (startVal-endVal)/stepVal + 1
+		idx := int64(0)
+		for i := startVal; i >= endVal; i -= stepVal {
+			executedAtLeastOnce = true
+			isLast := (idx == total-1)
+			idx++
+			scope := map[string]any{
+				n.VarName: i,
+			}
+			subContext := ctx.SubContext(scope)
+			err := n.BodyBlock.Render(subContext, w)
+			if errors.Is(err, errBreak) {
+				break
+			}
+			if errors.Is(err, errContinue) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+
+			if n.SeparatorNode != nil && !isLast {
+				if err := n.SeparatorNode.Render(subContext, w); err != nil {
+					if errors.Is(err, errBreak) {
+						break
+					}
+					if errors.Is(err, errContinue) {
+						continue
+					}
+					return err
+				}
+			}
+		}
+	}
+
+	if !executedAtLeastOnce && n.ElseBlock != nil {
+		return n.ElseBlock.Render(ctx, w)
+	}
+
+	return nil
+}
+
+func evaluateInt(evaluator *Evaluator, expr string, ctx *Context) (int64, error) {
+	val, err := evaluator.Evaluate(expr, ctx)
+	if err != nil {
+		return 0, err
+	}
+	if val == nil {
+		return 0, fmt.Errorf("expression %q evaluated to null", expr)
+	}
+	num, isNum := toFloat64(val)
+	if !isNum {
+		if s, ok := val.(string); ok {
+			if i, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
+				return i, nil
+			}
+			if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+				return int64(f), nil
+			}
+		}
+		return 0, fmt.Errorf("expression %q did not evaluate to an integer", expr)
+	}
+	return int64(num), nil
+}
+
+// ContinueNode represents a |continue| directive
+type ContinueNode struct {
+	Position int
+}
+
+func (n *ContinueNode) Render(ctx *Context, w io.Writer) error {
+	return errContinue
+}
+
+// BreakNode represents a |break| directive
+type BreakNode struct {
+	Position int
+}
+
+func (n *BreakNode) Render(ctx *Context, w io.Writer) error {
+	return errBreak
 }
 
 type fallthroughNode struct{}

@@ -111,9 +111,16 @@ func (p *Parser) Parse(tokens []Token) (*CompiledTemplate, error) {
 		}, nil
 	}
 
-	rootBlock, err := p.parseBlock(cursor, "", metadata)
+	rootBlock, err := p.parseBlockWithLoopDepth(cursor, "", metadata, 0)
 	if err != nil {
 		return nil, err
+	}
+	if cursor.hasNext() {
+		tok := cursor.peek()
+		if tok.Type == TokenElse {
+			return nil, fmt.Errorf("|else| outside for or each at position %d", tok.Position)
+		}
+		return nil, fmt.Errorf("unexpected directive |%s| at position %d", tok.Value, tok.Position)
 	}
 
 	return &CompiledTemplate{
@@ -145,6 +152,10 @@ func (c *parserCursor) next() Token {
 }
 
 func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata map[string]any) (Node, error) {
+	return p.parseBlockWithLoopDepth(cursor, stopToken, metadata, 0)
+}
+
+func (p *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenType, metadata map[string]any, loopDepth int) (Node, error) {
 	var nodes []Node
 
 	for cursor.hasNext() {
@@ -172,17 +183,35 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 			}
 			nodes = append(nodes, exprNode)
 		case TokenIf:
-			ifNode, err := p.parseIf(token, cursor, metadata)
+			ifNode, err := p.parseIf(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, ifNode)
 		case TokenEach:
-			eachNode, err := p.parseEach(token, cursor, metadata)
+			eachNode, err := p.parseEach(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, eachNode)
+		case TokenFor:
+			forNode, err := p.parseFor(token, cursor, metadata, loopDepth)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, forNode)
+		case TokenContinue:
+			if loopDepth <= 0 {
+				return nil, fmt.Errorf("|continue| outside a loop at %d", token.Position)
+			}
+			nodes = append(nodes, &ContinueNode{Position: token.Position})
+		case TokenBreak:
+			if loopDepth <= 0 {
+				return nil, fmt.Errorf("|break| outside a loop at %d", token.Position)
+			}
+			nodes = append(nodes, &BreakNode{Position: token.Position})
+		case TokenEndFor, TokenEndEach, TokenEndIf, TokenEndSection, TokenEndComponent, TokenEndSlot, TokenEndMacro, TokenEndFragment, TokenEndMinify, TokenEndAttempt, TokenEndSwitch, TokenEndSeparator:
+			return nil, fmt.Errorf("misplaced loop or block directive |%s| at %d", token.Value, token.Position)
 		case TokenModel:
 			modelType := strings.TrimSpace(token.Value[len("model "):])
 			nodes = append(nodes, &ModelNode{ModelType: modelType})
@@ -208,7 +237,7 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 			}
 			nodes = append(nodes, callNode)
 		case TokenSeparator:
-			sepBody, err := p.parseBlock(cursor, TokenEndSeparator, metadata)
+			sepBody, err := p.parseBlockWithLoopDepth(cursor, TokenEndSeparator, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -217,13 +246,13 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 			}
 			nodes = append(nodes, &SeparatorNode{Body: sepBody})
 		case TokenFragment:
-			fragNode, err := p.parseFragment(token, cursor, metadata)
+			fragNode, err := p.parseFragment(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, fragNode)
 		case TokenMinify:
-			minNode, err := p.parseMinify(token, cursor, metadata)
+			minNode, err := p.parseMinify(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -231,7 +260,7 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 		case TokenPage:
 			p.parsePageMetadata(token, metadata)
 		case TokenAttempt:
-			attNode, err := p.parseAttempt(token, cursor, metadata)
+			attNode, err := p.parseAttempt(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -246,7 +275,7 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 			secName := strings.TrimSpace(token.Value[len("yield "):])
 			nodes = append(nodes, &YieldNode{SectionName: secName})
 		case TokenComponent:
-			compNode, err := p.parseComponent(token, cursor, metadata)
+			compNode, err := p.parseComponent(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -255,7 +284,7 @@ func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata 
 			slotName := strings.TrimSpace(token.Value[len("slot "):])
 			nodes = append(nodes, &SlotNode{SlotName: slotName})
 		case TokenSwitch:
-			swNode, err := p.parseSwitch(token, cursor, metadata)
+			swNode, err := p.parseSwitch(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -348,9 +377,9 @@ func (p *Parser) parseExpression(val string) (Node, error) {
 	}, nil
 }
 
-func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
+func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	condition := strings.TrimSpace(ifToken.Value[len("if "):])
-	thenBlock, err := p.parseBlock(cursor, TokenEndIf, metadata)
+	thenBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +392,7 @@ func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[strin
 		if current.Type == TokenElseIf {
 			cursor.next()
 			cond := strings.TrimSpace(current.Value[len("else if "):])
-			body, err := p.parseBlock(cursor, TokenEndIf, metadata)
+			body, err := p.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -371,7 +400,7 @@ func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[strin
 		} else if current.Type == TokenElse {
 			cursor.next()
 			var err error
-			elseBlock, err = p.parseBlock(cursor, TokenEndIf, metadata)
+			elseBlock, err = p.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -396,7 +425,7 @@ func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[strin
 	}, nil
 }
 
-func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
+func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	statement := strings.TrimSpace(eachToken.Value[len("each "):])
 	inIndex := strings.Index(statement, " in ")
 	if inIndex == -1 {
@@ -406,7 +435,7 @@ func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[s
 	leftSide := strings.TrimSpace(statement[:inIndex])
 	collectionExpr := strings.TrimSpace(statement[inIndex+4:])
 
-	bodyBlock, err := p.parseBlock(cursor, TokenEndEach, metadata)
+	bodyBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndEach, metadata, loopDepth+1)
 	if err != nil {
 		return nil, err
 	}
@@ -414,9 +443,13 @@ func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[s
 	var elseBlock Node
 	if cursor.hasNext() && cursor.peek().Type == TokenElse {
 		cursor.next()
-		elseBlock, err = p.parseBlock(cursor, TokenEndEach, metadata)
+		var err error
+		elseBlock, err = p.parseBlockWithLoopDepth(cursor, TokenEndEach, metadata, loopDepth)
 		if err != nil {
 			return nil, err
+		}
+		if cursor.hasNext() && cursor.peek().Type == TokenElse {
+			return nil, fmt.Errorf("multiple |else| blocks in one loop at position %d", cursor.peek().Position)
 		}
 	}
 
@@ -462,6 +495,164 @@ func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[s
 		Evaluator:            p.evaluator,
 		IsMapLoop:            isMapLoop,
 	}, nil
+}
+
+func (p *Parser) parseFor(forToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	statement := strings.TrimSpace(forToken.Value[len("for "):])
+	varName, startExpr, endExpr, stepExpr, err := p.parseForHeader(statement, forToken.Position)
+	if err != nil {
+		return nil, err
+	}
+
+	bodyBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndFor, metadata, loopDepth+1)
+	if err != nil {
+		return nil, err
+	}
+
+	var elseBlock Node
+	if cursor.hasNext() && cursor.peek().Type == TokenElse {
+		cursor.next()
+		var err error
+		elseBlock, err = p.parseBlockWithLoopDepth(cursor, TokenEndFor, metadata, loopDepth)
+		if err != nil {
+			return nil, err
+		}
+		if cursor.hasNext() && cursor.peek().Type == TokenElse {
+			return nil, fmt.Errorf("multiple |else| blocks in one loop at position %d", cursor.peek().Position)
+		}
+	}
+
+	if cursor.hasNext() && cursor.peek().Type == TokenEndFor {
+		cursor.next()
+	} else {
+		return nil, fmt.Errorf("missing closing |/for| for loop at position %d", forToken.Position)
+	}
+
+	var separatorNode Node
+	if block, ok := bodyBlock.(*BlockNode); ok {
+		var bodyChildren []Node
+		for _, child := range block.Children {
+			if sep, ok := child.(*SeparatorNode); ok {
+				separatorNode = sep
+			} else {
+				bodyChildren = append(bodyChildren, child)
+			}
+		}
+		bodyBlock = &BlockNode{Children: bodyChildren}
+	}
+
+	return &ForNode{
+		VarName:       varName,
+		StartExpr:     startExpr,
+		EndExpr:       endExpr,
+		StepExpr:      stepExpr,
+		BodyBlock:     bodyBlock,
+		ElseBlock:     elseBlock,
+		SeparatorNode: separatorNode,
+		Evaluator:     p.evaluator,
+		Position:      forToken.Position,
+	}, nil
+}
+
+func (p *Parser) parseForHeader(statement string, pos int) (varName, startExpr, endExpr, stepExpr string, err error) {
+	if statement == "" {
+		return "", "", "", "", fmt.Errorf("missing loop variable at position %d", pos)
+	}
+
+	fromIdx := p.findTopLevelKeyword(statement, "from")
+	if fromIdx == -1 {
+		return "", "", "", "", fmt.Errorf("missing from in for loop at position %d", pos)
+	}
+
+	varName = strings.TrimSpace(statement[:fromIdx])
+	if varName == "" {
+		return "", "", "", "", fmt.Errorf("missing loop variable at position %d", pos)
+	}
+
+	rest := strings.TrimSpace(statement[fromIdx+len("from"):])
+
+	toIdx := p.findTopLevelKeyword(rest, "to")
+	if toIdx == -1 {
+		return "", "", "", "", fmt.Errorf("missing to in for loop at position %d", pos)
+	}
+
+	startExpr = strings.TrimSpace(rest[:toIdx])
+	if startExpr == "" {
+		return "", "", "", "", fmt.Errorf("invalid start expression at position %d", pos)
+	}
+
+	rest2 := strings.TrimSpace(rest[toIdx+len("to"):])
+
+	stepIdx := p.findTopLevelKeyword(rest2, "step")
+	if stepIdx != -1 {
+		endExpr = strings.TrimSpace(rest2[:stepIdx])
+		stepExpr = strings.TrimSpace(rest2[stepIdx+len("step"):])
+		if stepExpr == "" {
+			return "", "", "", "", fmt.Errorf("invalid step expression at position %d", pos)
+		}
+	} else {
+		endExpr = rest2
+	}
+
+	if endExpr == "" {
+		return "", "", "", "", fmt.Errorf("invalid end expression at position %d", pos)
+	}
+
+	return varName, startExpr, endExpr, stepExpr, nil
+}
+
+func (p *Parser) findTopLevelKeyword(s string, keyword string) int {
+	insideSingleQuote := false
+	insideDoubleQuote := false
+	parenthesisDepth := 0
+	bracketDepth := 0
+
+	kwLen := len(keyword)
+	for i := 0; i <= len(s)-kwLen; i++ {
+		c := s[i]
+		if c == '\'' && !insideDoubleQuote {
+			insideSingleQuote = !insideSingleQuote
+			continue
+		}
+		if c == '"' && !insideSingleQuote {
+			insideDoubleQuote = !insideDoubleQuote
+			continue
+		}
+		if insideSingleQuote || insideDoubleQuote {
+			continue
+		}
+
+		if c == '(' {
+			parenthesisDepth++
+			continue
+		}
+		if c == ')' {
+			parenthesisDepth--
+			continue
+		}
+		if c == '[' {
+			bracketDepth++
+			continue
+		}
+		if c == ']' {
+			bracketDepth--
+			continue
+		}
+		if parenthesisDepth > 0 || bracketDepth > 0 {
+			continue
+		}
+
+		if strings.HasPrefix(s[i:], keyword) {
+			beforeIsBoundary := i == 0 || isWhitespaceChar(s[i-1])
+			afterIndex := i + kwLen
+			afterIsBoundary := afterIndex >= len(s) || isWhitespaceChar(s[afterIndex])
+
+			if beforeIsBoundary && afterIsBoundary {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 func (p *Parser) parseMacro(macroToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
@@ -528,9 +719,9 @@ func (p *Parser) parseCallMacro(callToken Token) (Node, error) {
 	}, nil
 }
 
-func (p *Parser) parseFragment(fragmentToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
+func (p *Parser) parseFragment(fragmentToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	name := strings.TrimSpace(fragmentToken.Value[len("fragment "):])
-	body, err := p.parseBlock(cursor, TokenEndFragment, metadata)
+	body, err := p.parseBlockWithLoopDepth(cursor, TokenEndFragment, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -547,8 +738,8 @@ func (p *Parser) parseFragment(fragmentToken Token, cursor *parserCursor, metada
 	}, nil
 }
 
-func (p *Parser) parseMinify(minifyToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
-	body, err := p.parseBlock(cursor, TokenEndMinify, metadata)
+func (p *Parser) parseMinify(minifyToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	body, err := p.parseBlockWithLoopDepth(cursor, TokenEndMinify, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -606,8 +797,8 @@ func (p *Parser) parseMetadataValue(str string) any {
 	return str
 }
 
-func (p *Parser) parseAttempt(attemptToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
-	body, err := p.parseBlock(cursor, TokenRecover, metadata)
+func (p *Parser) parseAttempt(attemptToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	body, err := p.parseBlockWithLoopDepth(cursor, TokenRecover, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -623,7 +814,7 @@ func (p *Parser) parseAttempt(attemptToken Token, cursor *parserCursor, metadata
 		errorVarName = strings.TrimSpace(val[len("as "):])
 	}
 
-	recoverBlock, err := p.parseBlock(cursor, TokenEndAttempt, metadata)
+	recoverBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndAttempt, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -718,7 +909,7 @@ func (p *Parser) findIncludeWithIndex(body string) int {
 	return -1
 }
 
-func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
+func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	compName := strings.TrimSpace(compToken.Value[len("component "):])
 	if compName == "" {
 		return nil, fmt.Errorf("component template name must not be empty at %d", compToken.Position)
@@ -742,7 +933,7 @@ func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata 
 			return nil, fmt.Errorf("slot name must not be empty at %d", tok.Position)
 		}
 
-		slotBody, err := p.parseBlock(cursor, TokenEndSlot, metadata)
+		slotBody, err := p.parseBlockWithLoopDepth(cursor, TokenEndSlot, metadata, loopDepth)
 		if err != nil {
 			return nil, err
 		}
@@ -768,7 +959,7 @@ func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata 
 	}, nil
 }
 
-func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
+func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	expr := strings.TrimSpace(switchToken.Value[len("switch "):])
 
 	var cases []CaseBlock
@@ -785,7 +976,7 @@ func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata m
 			cursor.next()
 			caseExpr := strings.TrimSpace(tok.Value[len("case "):])
 
-			caseBody, err := p.parseBlock(cursor, TokenEndSwitch, metadata)
+			caseBody, err := p.parseBlockWithLoopDepth(cursor, TokenEndSwitch, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -810,7 +1001,7 @@ func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata m
 			})
 		} else if tok.Type == TokenDefault {
 			cursor.next()
-			body, err := p.parseBlock(cursor, TokenEndSwitch, metadata)
+			body, err := p.parseBlockWithLoopDepth(cursor, TokenEndSwitch, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
