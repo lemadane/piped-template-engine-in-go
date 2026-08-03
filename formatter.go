@@ -1,6 +1,7 @@
 package pte
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -9,14 +10,37 @@ var commentRegex = regexp.MustCompile(`<!--[\s\S]*?-->`)
 var spaceRegex = regexp.MustCompile(`\s+`)
 var tagSpaceRegex = regexp.MustCompile(`>\s+<`)
 
+var preservedTagRegexes = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)<pre[\s>][\s\S]*?</pre>`),
+	regexp.MustCompile(`(?i)<textarea[\s>][\s\S]*?</textarea>`),
+	regexp.MustCompile(`(?i)<script[\s>][\s\S]*?</script>`),
+	regexp.MustCompile(`(?i)<style[\s>][\s\S]*?</style>`),
+}
+
 func MinifyHTML(html string) string {
 	if html == "" {
 		return ""
 	}
-	res := commentRegex.ReplaceAllString(html, "")
-	res = spaceRegex.ReplaceAllString(res, " ")
+	html = commentRegex.ReplaceAllString(html, "")
+
+	var placeholders []string
+	for _, rgx := range preservedTagRegexes {
+		html = rgx.ReplaceAllStringFunc(html, func(m string) string {
+			idx := len(placeholders)
+			placeholders = append(placeholders, m)
+			return fmt.Sprintf("___PTE_PRESERVED_%d___", idx)
+		})
+	}
+
+	res := spaceRegex.ReplaceAllString(html, " ")
 	res = tagSpaceRegex.ReplaceAllString(res, "><")
-	return strings.TrimSpace(res)
+	res = strings.TrimSpace(res)
+
+	for i, ph := range placeholders {
+		res = strings.Replace(res, fmt.Sprintf("___PTE_PRESERVED_%d___", i), ph, 1)
+	}
+
+	return res
 }
 
 func PrettifyHTML(html string) string {

@@ -1049,24 +1049,24 @@ Define reusable functional template subroutines inside the page that accept posi
 PTEGo includes built-in form control helpers for dynamic input binding and error highlighting.
 
 #### A. Field Binding (`|field model.property|`)
-Generates form input attributes (`name`, `id`, `value`) automatically based on the model property:
+Generates form input attributes (`name`, `id`, `value`) automatically based on the model property (and appends `class="input is-danger"` if matching field errors are present):
 ```html
 <input |field user.email|>
-<!-- Renders: name="email" id="email" value="alice@example.com" class="form-control" -->
+<!-- Renders: name="email" id="email" value="alice@example.com" -->
 ```
 
 #### B. Read-Only Display Control (`|display model.property|`)
-Renders read-only view container markup for model attributes:
+Renders raw model property text value directly without HTML tags:
 ```html
 |display user.bio|
-<!-- Renders: <span class="field-display">User bio text...</span> -->
+<!-- Renders: User bio text... -->
 ```
 
 #### C. Input Editor Control (`|editor model.property|`)
-Renders an editable textarea or input element bound to the property:
+Renders an editable text `<input>` element bound to the property:
 ```html
 |editor user.bio|
-<!-- Renders: <textarea name="bio" id="bio" class="form-editor">User bio text...</textarea> -->
+<!-- Renders: <input type="text" name="bio" id="bio" value="User bio text..." class="input"> -->
 ```
 
 ---

@@ -385,31 +385,25 @@ func (r *FileRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// Render the template
+	// Render the template to a buffer before writing headers or body
 	ctx := NewContext(model)
 	ctx.PushLocal("_engine", r.engine)
 
-	var renderErr error
-	if r.engine.minify {
-		var buf bytes.Buffer
-		renderErr = route.Compiled.RootNode.Render(ctx, &buf)
-		if renderErr == nil {
-			_, _ = io.WriteString(w, MinifyHTML(buf.String()))
-		}
-	} else if r.engine.prettify {
-		var buf bytes.Buffer
-		renderErr = route.Compiled.RootNode.Render(ctx, &buf)
-		if renderErr == nil {
-			_, _ = io.WriteString(w, PrettifyHTML(buf.String()))
-		}
-	} else {
-		renderErr = route.Compiled.RootNode.Render(ctx, w)
+	var buf bytes.Buffer
+	renderErr := route.Compiled.RootNode.Render(ctx, &buf)
+	if renderErr != nil {
+		http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	if renderErr != nil {
-		// Only write error if headers have not been written
-		http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+	result := buf.String()
+	if r.engine.minify {
+		result = MinifyHTML(result)
+	} else if r.engine.prettify {
+		result = PrettifyHTML(result)
 	}
+
+	_, _ = io.WriteString(w, result)
 }
 
 func (r *FileRouter) normalizePattern(p string) string {

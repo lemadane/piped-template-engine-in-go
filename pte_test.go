@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -1682,4 +1686,194 @@ func TestSwitchSemanticsInvalid(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfirmedIssuesRegressionSuite(t *testing.T) {
+	t.Run("Issue 1: Template-root directory traversal", func(t *testing.T) {
+		tempDir := t.TempDir()
+		root := filepath.Join(tempDir, "templates")
+		privRoot := filepath.Join(tempDir, "templates-private")
+
+		if err := os.MkdirAll(root, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(privRoot, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(filepath.Join(privRoot, "secret.pte"), []byte("SECRET_DATA"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		engine := NewEngine(root)
+		var buf bytes.Buffer
+		err := engine.Render(&buf, "../templates-private/secret", nil)
+		if err == nil {
+			t.Fatalf("expected directory traversal error, got output %q", buf.String())
+		}
+		if !strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("expected escape template root error, got %v", err)
+		}
+	})
+
+	t.Run("Issue 2: Conditional attributes race condition", func(t *testing.T) {
+		engine := NewEngine("")
+		tmpl := `<button |attr disabled if disabled|>X</button>`
+
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				var buf bytes.Buffer
+				dis := idx%2 == 0
+				if err := engine.Render(&buf, tmpl, map[string]any{"disabled": dis}); err != nil {
+					t.Errorf("render error: %v", err)
+				}
+			}(i)
+		}
+		wg.Wait()
+	})
+
+	t.Run("Issue 3: Field and Editor attribute injection escaping", func(t *testing.T) {
+		engine := NewEngine("")
+		data := map[string]any{
+			"user": map[string]any{
+				"email": `x" autofocus onfocus="alert(1)`,
+			},
+		}
+
+		var bufField bytes.Buffer
+		if err := engine.RenderString(&bufField, `|field user.email|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(bufField.String(), `x" autofocus`) {
+			t.Errorf("unquoted attribute injection in field: %s", bufField.String())
+		}
+		if !strings.Contains(bufField.String(), `&quot;`) {
+			t.Errorf("expected escaped quotes in field output: %s", bufField.String())
+		}
+
+		var bufEdit bytes.Buffer
+		if err := engine.RenderString(&bufEdit, `|editor user.email|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(bufEdit.String(), `x" autofocus`) {
+			t.Errorf("unquoted attribute injection in editor: %s", bufEdit.String())
+		}
+		if !strings.Contains(bufEdit.String(), `&quot;`) {
+			t.Errorf("expected escaped quotes in editor output: %s", bufEdit.String())
+		}
+	})
+
+	t.Run("Issue 4: Attempt panic recovery", func(t *testing.T) {
+		engine := NewEngine("")
+		tmpl := `|attempt||model.explode||recover|Recovered|/attempt|`
+
+		panicModel := map[string]any{
+			"model": panicModelObj{},
+		}
+
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, panicModel); err != nil {
+			t.Fatalf("unexpected rendering error: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "Recovered" {
+			t.Errorf("expected 'Recovered', got %q", got)
+		}
+	})
+
+	t.Run("Issue 6: Non-string map keys", func(t *testing.T) {
+		engine := NewEngine("")
+		intMap := map[int]string{1: "one", 2: "two"}
+		data := map[string]any{"m": intMap}
+
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, `|m.1|`, data); err != nil {
+			t.Fatalf("unexpected error rendering int map key: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "one" {
+			t.Errorf("expected 'one', got %q", got)
+		}
+	})
+
+	t.Run("Issue 7: Unexported struct field safety", func(t *testing.T) {
+		engine := NewEngine("")
+		unexp := structWithUnexported{unexported: "secret", Exported: "public"}
+		data := map[string]any{"u": unexp}
+
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, `|u.unexported|`, data)
+		if err == nil {
+			t.Errorf("expected property not found error for unexported field, got value %q", buf.String())
+		}
+	})
+
+	t.Run("Issue 8: WithFS embedded template root lookup", func(t *testing.T) {
+		memFS := fstest.MapFS{
+			"templates/home.pte": &fstest.MapFile{
+				Data: []byte("<h1>Embedded Home</h1>"),
+			},
+		}
+
+		engine := NewEngine("templates", WithFS(memFS))
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, "home", nil); err != nil {
+			t.Fatalf("failed to render embedded template with root prefix: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<h1>Embedded Home</h1>" {
+			t.Errorf("expected '<h1>Embedded Home</h1>', got %q", got)
+		}
+	})
+
+	t.Run("Issue 9: RenderString plain text", func(t *testing.T) {
+		engine := NewEngine("")
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "Hello world", nil); err != nil {
+			t.Fatalf("RenderString error: %v", err)
+		}
+		if got := buf.String(); got != "Hello world" {
+			t.Errorf("expected 'Hello world', got %q", got)
+		}
+	})
+
+	t.Run("Issue 10: Fragment API formatting options", func(t *testing.T) {
+		engine := NewEngine("", WithInMemoryTemplates(map[string]string{
+			"frag": `|fragment item|  <div>   Space   </div>  |/fragment|`,
+		}), WithMinify(true))
+
+		var buf bytes.Buffer
+		if err := engine.RenderFragment(&buf, "frag", "item", nil); err != nil {
+			t.Fatalf("RenderFragment error: %v", err)
+		}
+		if got := buf.String(); got != "<div> Space </div>" {
+			t.Errorf("expected minified fragment '<div> Space </div>', got %q", got)
+		}
+	})
+
+	t.Run("Additional concern: MinifyHTML raw text whitespace preservation", func(t *testing.T) {
+		html := `<pre>  line1  \n  line2  </pre><textarea>  val  </textarea><script> let x = " a  b "; </script>`
+		min := MinifyHTML(html)
+
+		if !strings.Contains(min, "<pre>  line1  \\n  line2  </pre>") {
+			t.Errorf("MinifyHTML altered <pre> content: %s", min)
+		}
+		if !strings.Contains(min, "<textarea>  val  </textarea>") {
+			t.Errorf("MinifyHTML altered <textarea> content: %s", min)
+		}
+		if !strings.Contains(min, `<script> let x = " a  b "; </script>`) {
+			t.Errorf("MinifyHTML altered <script> content: %s", min)
+		}
+	})
+}
+
+type panicModelObj struct{}
+
+func (panicModelObj) Explode() string {
+	panic("model method panic")
+}
+
+type structWithUnexported struct {
+	unexported string
+	Exported   string
 }

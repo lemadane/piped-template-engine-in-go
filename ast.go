@@ -29,7 +29,24 @@ type BlockNode struct {
 }
 
 func (n *BlockNode) Render(ctx *Context, w io.Writer) error {
-	for i, child := range n.Children {
+	skipNextLeadingWhitespace := false
+	for _, child := range n.Children {
+		if skipNextLeadingWhitespace {
+			if textNode, ok := child.(*TextNode); ok {
+				text := string(textNode.Value)
+				trimmed := strings.TrimLeft(text, " \t\r\n")
+				if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "/>") {
+					_, err := io.WriteString(w, trimmed)
+					skipNextLeadingWhitespace = false
+					if err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			skipNextLeadingWhitespace = false
+		}
+
 		err := child.Render(ctx, w)
 		if err == errConditionalAttributeSkipped {
 			if buf, ok := w.(*bytes.Buffer); ok {
@@ -40,16 +57,7 @@ func (n *BlockNode) Render(ctx *Context, w io.Writer) error {
 				buf.Reset()
 				buf.Write(data)
 			}
-
-			if i+1 < len(n.Children) {
-				if nextTextNode, ok := n.Children[i+1].(*TextNode); ok {
-					text := string(nextTextNode.Value)
-					trimmed := strings.TrimLeft(text, " \t\r\n")
-					if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "/>") {
-						nextTextNode.Value = []byte(trimmed)
-					}
-				}
-			}
+			skipNextLeadingWhitespace = true
 			continue
 		}
 		if err != nil {
@@ -738,7 +746,10 @@ func (n *FieldNode) Render(ctx *Context, w io.Writer) error {
 		valStr = fmt.Sprintf("%v", rawVal)
 	}
 
-	output := fmt.Sprintf(`name="%s" id="%s" value="%s"`, name, name, valStr)
+	escapedName := attributeEscape(name)
+	escapedVal := attributeEscape(valStr)
+
+	output := fmt.Sprintf(`name="%s" id="%s" value="%s"`, escapedName, escapedName, escapedVal)
 
 	errorsObj := ctx.Get("errors")
 	if errorsObj != nil {
@@ -797,7 +808,10 @@ func (n *EditorNode) Render(ctx *Context, w io.Writer) error {
 		valStr = fmt.Sprintf("%v", rawVal)
 	}
 
-	inputHtml := fmt.Sprintf(`<input type="text" name="%s" id="%s" value="%s" class="input">`, name, name, valStr)
+	escapedName := attributeEscape(name)
+	escapedVal := attributeEscape(valStr)
+
+	inputHtml := fmt.Sprintf(`<input type="text" name="%s" id="%s" value="%s" class="input">`, escapedName, escapedName, escapedVal)
 	_, err = io.WriteString(w, inputHtml)
 	return err
 }
@@ -811,7 +825,21 @@ type AttemptNode struct {
 
 func (n *AttemptNode) Render(ctx *Context, w io.Writer) error {
 	var buf bytes.Buffer
-	err := n.Body.Render(ctx, &buf)
+	var err error
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if pErr, ok := r.(error); ok {
+					err = pErr
+				} else {
+					err = fmt.Errorf("%v", r)
+				}
+			}
+		}()
+		err = n.Body.Render(ctx, &buf)
+	}()
+
 	if err != nil {
 		if errors.Is(err, errBreak) || errors.Is(err, errContinue) {
 			return err

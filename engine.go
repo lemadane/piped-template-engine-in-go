@@ -13,6 +13,7 @@ import (
 )
 
 type Engine struct {
+	rawTemplateRoot   string
 	templateRoot      string
 	suffix            string
 	minify            bool
@@ -61,9 +62,11 @@ func WithFS(fsys fs.FS) EngineOption {
 }
 
 func NewEngine(templateRoot string, opts ...EngineOption) *Engine {
+	rawRoot := templateRoot
 	root := templateRoot
 	if root == "" {
 		root = "pte-templates"
+		rawRoot = root
 	}
 	absRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
@@ -71,6 +74,7 @@ func NewEngine(templateRoot string, opts ...EngineOption) *Engine {
 	}
 
 	e := &Engine{
+		rawTemplateRoot:   rawRoot,
 		templateRoot:      absRoot,
 		suffix:            ".pte",
 		includedTemplates: make(map[string]string),
@@ -143,7 +147,28 @@ func (e *Engine) Render(w io.Writer, templateOrTemplateName string, values map[s
 }
 
 func (e *Engine) RenderString(w io.Writer, template string, values map[string]any) error {
-	return e.Render(w, template, values)
+	ctx := NewContext(values)
+	ctx.PushLocal("_engine", e)
+
+	compiled, err := e.Compile(template)
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	if err := compiled.RootNode.Render(ctx, &buf); err != nil {
+		return err
+	}
+
+	result := buf.String()
+	if e.minify {
+		result = MinifyHTML(result)
+	} else if e.prettify {
+		result = PrettifyHTML(result)
+	}
+
+	_, err = io.WriteString(w, result)
+	return err
 }
 
 func (e *Engine) RenderFragment(w io.Writer, templateOrTemplateName, fragmentName string, values map[string]any) error {
@@ -165,7 +190,20 @@ func (e *Engine) RenderFragment(w io.Writer, templateOrTemplateName, fragmentNam
 	ctx := NewContext(values)
 	ctx.PushLocal("_engine", e)
 
-	return fragNode.Render(ctx, w)
+	var buf bytes.Buffer
+	if err := fragNode.Render(ctx, &buf); err != nil {
+		return err
+	}
+
+	result := buf.String()
+	if e.minify {
+		result = MinifyHTML(result)
+	} else if e.prettify {
+		result = PrettifyHTML(result)
+	}
+
+	_, err = io.WriteString(w, result)
+	return err
 }
 
 // Streaming/Goroutine API
@@ -198,12 +236,14 @@ func (e *Engine) RenderFragmentStream(name, fragment string, data map[string]any
 }
 
 func (e *Engine) RenderFragments(w io.Writer, name string, fragmentNames []string, data map[string]any) error {
+	var buf bytes.Buffer
 	for _, fragName := range fragmentNames {
-		if err := e.RenderFragment(w, name, fragName, data); err != nil {
+		if err := e.RenderFragment(&buf, name, fragName, data); err != nil {
 			return err
 		}
 	}
-	return nil
+	_, err := io.WriteString(w, buf.String())
+	return err
 }
 
 func (e *Engine) RenderFragmentsStream(name string, fragmentNames []string, data map[string]any) io.Reader {
@@ -253,9 +293,20 @@ func (e *Engine) loadTemplateSource(templateOrTemplateName string) (string, erro
 		if e.fsys != nil {
 			relPath := normalized + e.suffix
 			relPath = strings.TrimPrefix(relPath, "/")
-			data, err := fs.ReadFile(e.fsys, relPath)
-			if err == nil {
-				return string(data), nil
+
+			pathsToTry := []string{relPath}
+			if e.rawTemplateRoot != "" && e.rawTemplateRoot != "." {
+				rootClean := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(e.rawTemplateRoot)), "/")
+				if rootClean != "" && rootClean != "." {
+					pathsToTry = append([]string{filepath.ToSlash(filepath.Join(rootClean, relPath))}, relPath)
+				}
+			}
+
+			for _, p := range pathsToTry {
+				data, err := fs.ReadFile(e.fsys, p)
+				if err == nil {
+					return string(data), nil
+				}
 			}
 		}
 
@@ -294,14 +345,14 @@ func (e *Engine) resolveTemplatePath(name string) (string, error) {
 		return "", fmt.Errorf("template name must not be absolute: %s", name)
 	}
 
-	// Avoid escaping templateRoot
 	resolved := filepath.Join(e.templateRoot, relPath)
 	cleanResolved, err := filepath.Abs(filepath.Clean(resolved))
 	if err != nil {
 		return "", err
 	}
 
-	if !strings.HasPrefix(cleanResolved, e.templateRoot) {
+	rel, err := filepath.Rel(e.templateRoot, cleanResolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("template name must not escape template root: %s", name)
 	}
 

@@ -235,3 +235,25 @@ func TestHTMXRoutingSupport(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, body)
 	}
 }
+
+func TestRouterRenderErrorStatus(t *testing.T) {
+	memFS := fstest.MapFS{
+		"pte-routes/error/+page.pte": &fstest.MapFile{
+			Data: []byte("prefix |missing.child|"),
+		},
+	}
+
+	engine := NewEngine("", WithFS(memFS))
+	router, err := NewFileRouterFS(engine, memFS, "pte-routes")
+	if err != nil {
+		t.Fatalf("failed to create embedded file router: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/error", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 InternalServerError, got %d", w.Code)
+	}
+}

@@ -1117,10 +1117,38 @@ func (e *Evaluator) readProperty(source any, name string, optional bool) (any, e
 	}
 
 	if val.Kind() == reflect.Map {
-		mapKey := reflect.ValueOf(name)
-		mapVal := val.MapIndex(mapKey)
-		if mapVal.IsValid() {
-			return mapVal.Interface(), nil
+		keyType := val.Type().Key()
+		var mapKey reflect.Value
+
+		if keyType.Kind() == reflect.String {
+			mapKey = reflect.ValueOf(name)
+		} else {
+			targetVal := reflect.New(keyType).Elem()
+			if keyType.Kind() >= reflect.Int && keyType.Kind() <= reflect.Int64 {
+				if i, err := strconv.ParseInt(name, 10, 64); err == nil && !targetVal.OverflowInt(i) {
+					targetVal.SetInt(i)
+					mapKey = targetVal
+				}
+			} else if keyType.Kind() >= reflect.Uint && keyType.Kind() <= reflect.Uint64 {
+				if u, err := strconv.ParseUint(name, 10, 64); err == nil && !targetVal.OverflowUint(u) {
+					targetVal.SetUint(u)
+					mapKey = targetVal
+				}
+			} else {
+				v := reflect.ValueOf(name)
+				if v.Type().AssignableTo(keyType) {
+					mapKey = v
+				} else if v.Type().ConvertibleTo(keyType) {
+					mapKey = v.Convert(keyType)
+				}
+			}
+		}
+
+		if mapKey.IsValid() {
+			mapVal := val.MapIndex(mapKey)
+			if mapVal.IsValid() {
+				return mapVal.Interface(), nil
+			}
 		}
 		if cleanName == "size" || cleanName == "length" || cleanName == "count" {
 			return val.Len(), nil
@@ -1160,7 +1188,7 @@ func (e *Evaluator) readProperty(source any, name string, optional bool) (any, e
 			fieldVal = val.FieldByName(capitalize(name))
 		}
 
-		if fieldVal.IsValid() {
+		if fieldVal.IsValid() && fieldVal.CanInterface() {
 			return fieldVal.Interface(), nil
 		}
 
