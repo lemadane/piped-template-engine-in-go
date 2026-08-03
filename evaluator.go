@@ -1454,6 +1454,9 @@ func parseNumberValue(value any) (numberValue, bool) {
 			}
 		}
 		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return numberValue{}, false
+			}
 			return numberValue{kind: numberKindFloat, floatVal: f}, true
 		}
 	}
@@ -1614,21 +1617,6 @@ func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, op
 		return nil, fmt.Errorf("arithmetic operation on non-finite number is not allowed")
 	}
 
-	if operator == "/" {
-		rf := rightNum.asFloat()
-		if rf == 0 {
-			return nil, fmt.Errorf("division by zero")
-		}
-		res := leftNum.asFloat() / rf
-		if math.IsNaN(res) || math.IsInf(res, 0) {
-			return nil, fmt.Errorf("float arithmetic overflow")
-		}
-		if res == float64(int64(res)) {
-			return int64(res), nil
-		}
-		return res, nil
-	}
-
 	if operator == "%" {
 		return performModulo(leftNum, rightNum)
 	}
@@ -1646,6 +1634,46 @@ func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, op
 			rightBig.SetInt64(rightNum.intVal)
 		} else {
 			rightBig.SetUint64(rightNum.uintVal)
+		}
+
+		if operator == "/" {
+			if rightBig.Sign() == 0 {
+				return nil, fmt.Errorf("division by zero")
+			}
+			quo := new(big.Int)
+			rem := new(big.Int)
+			quo.QuoRem(leftBig, rightBig, rem)
+
+			if rem.Sign() == 0 {
+				if leftNum.kind == numberKindUnsignedInt && rightNum.kind == numberKindUnsignedInt {
+					if quo.IsUint64() {
+						return quo.Uint64(), nil
+					}
+					return nil, fmt.Errorf("integer overflow")
+				}
+				if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
+					if quo.IsInt64() {
+						return quo.Int64(), nil
+					}
+					return nil, fmt.Errorf("integer overflow")
+				}
+				if quo.Sign() >= 0 {
+					if quo.IsInt64() {
+						return quo.Int64(), nil
+					}
+					if quo.IsUint64() {
+						return quo.Uint64(), nil
+					}
+				}
+				if quo.IsInt64() {
+					return quo.Int64(), nil
+				}
+				return nil, fmt.Errorf("integer overflow")
+			}
+
+			rat := new(big.Rat).SetFrac(leftBig, rightBig)
+			floatVal, _ := rat.Float64()
+			return floatVal, nil
 		}
 
 		resBig := new(big.Int)
@@ -1721,6 +1749,19 @@ func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, op
 		res := leftNum.asFloat() * rightNum.asFloat()
 		if math.IsNaN(res) || math.IsInf(res, 0) {
 			return nil, fmt.Errorf("float arithmetic overflow")
+		}
+		return res, nil
+	case "/":
+		rf := rightNum.asFloat()
+		if rf == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+		res := leftNum.asFloat() / rf
+		if math.IsNaN(res) || math.IsInf(res, 0) {
+			return nil, fmt.Errorf("float arithmetic overflow")
+		}
+		if res == float64(int64(res)) {
+			return int64(res), nil
 		}
 		return res, nil
 	default:
