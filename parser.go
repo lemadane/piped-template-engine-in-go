@@ -28,39 +28,39 @@ type LayoutNode struct {
 	Sections   map[string]Node
 }
 
-func (n *LayoutNode) Render(ctx *Context, w io.Writer) error {
-	engineObj := ctx.Get("_engine")
+func (node *LayoutNode) Render(context *Context, writer io.Writer) error {
+	engineObj := context.Get("_engine")
 	if engineObj == nil {
 		return fmt.Errorf("PTE template engine not found in context")
 	}
 
-	engine, ok := engineObj.(interface {
-		renderNamedTemplate(w io.Writer, name string, ctx *Context) error
+	engine, isEngine := engineObj.(interface {
+		renderNamedTemplate(writer io.Writer, name string, context *Context) error
 	})
-	if !ok {
+	if !isEngine {
 		return fmt.Errorf("invalid template engine in context")
 	}
 
 	// Render sections to string buffers
 	sectionValues := make(map[string]string)
-	for name, sectionBlock := range n.Sections {
-		var buf bytes.Buffer
-		if err := sectionBlock.Render(ctx, &buf); err != nil {
+	for name, sectionBlock := range node.Sections {
+		var buffer bytes.Buffer
+		if err := sectionBlock.Render(context, &buffer); err != nil {
 			return err
 		}
-		sectionValues[name] = buf.String()
+		sectionValues[name] = buffer.String()
 	}
 
-	subContext := ctx.With("_sections", sectionValues)
-	return engine.renderNamedTemplate(w, n.LayoutName, subContext)
+	subContext := context.With("_sections", sectionValues)
+	return engine.renderNamedTemplate(writer, node.LayoutName, subContext)
 }
 
-func (p *Parser) Parse(tokens []Token) (*CompiledTemplate, error) {
+func (parser *Parser) Parse(tokens []Token) (*CompiledTemplate, error) {
 	cursor := &parserCursor{tokens: tokens}
 	metadata := make(map[string]any)
 
 	// Skip leading whitespace/comments
-	p.skipWhitespaceAndComments(cursor)
+	parser.skipWhitespaceAndComments(cursor)
 
 	// Check if the template starts with |layout templateName|
 	if cursor.hasNext() && cursor.peek().Type == TokenLayout {
@@ -72,23 +72,23 @@ func (p *Parser) Parse(tokens []Token) (*CompiledTemplate, error) {
 
 		sections := make(map[string]Node)
 		for cursor.hasNext() {
-			p.skipWhitespaceAndComments(cursor)
+			parser.skipWhitespaceAndComments(cursor)
 			if !cursor.hasNext() {
 				break
 			}
 
-			tok := cursor.peek()
-			if tok.Type != TokenSection {
-				return nil, fmt.Errorf("unexpected token %q outside section blocks in layout page at %d", tok.Value, tok.Position)
+			token := cursor.peek()
+			if token.Type != TokenSection {
+				return nil, fmt.Errorf("unexpected token %q outside section blocks in layout page at %d", token.Value, token.Position)
 			}
 			cursor.next()
 
-			secName := strings.TrimSpace(tok.Value[len("section "):])
+			secName := strings.TrimSpace(token.Value[len("section "):])
 			if secName == "" {
-				return nil, fmt.Errorf("section name must not be empty at %d", tok.Position)
+				return nil, fmt.Errorf("section name must not be empty at %d", token.Position)
 			}
 
-			secBody, err := p.parseBlock(cursor, TokenEndSection, metadata)
+			secBody, err := parser.parseBlock(cursor, TokenEndSection, metadata)
 			if err != nil {
 				return nil, err
 			}
@@ -111,22 +111,22 @@ func (p *Parser) Parse(tokens []Token) (*CompiledTemplate, error) {
 		}, nil
 	}
 
-	rootBlock, err := p.parseBlockWithLoopDepthDirect(cursor, "", metadata, 0, false)
+	rootBlock, err := parser.parseBlockWithLoopDepthDirect(cursor, "", metadata, 0, false)
 	if err != nil {
 		return nil, err
 	}
 	if cursor.hasNext() {
-		tok := cursor.peek()
-		if tok.Type == TokenElse {
-			return nil, fmt.Errorf("|else| outside for or each at position %d", tok.Position)
+		token := cursor.peek()
+		if token.Type == TokenElse {
+			return nil, fmt.Errorf("|else| outside for or each at position %d", token.Position)
 		}
-		if tok.Type == TokenCase {
-			return nil, fmt.Errorf("misplaced |case| directive at position %d", tok.Position)
+		if token.Type == TokenCase {
+			return nil, fmt.Errorf("misplaced |case| directive at position %d", token.Position)
 		}
-		if tok.Type == TokenDefault {
-			return nil, fmt.Errorf("misplaced |default| directive at position %d", tok.Position)
+		if token.Type == TokenDefault {
+			return nil, fmt.Errorf("misplaced |default| directive at position %d", token.Position)
 		}
-		return nil, fmt.Errorf("unexpected directive |%s| at position %d", tok.Value, tok.Position)
+		return nil, fmt.Errorf("unexpected directive |%s| at position %d", token.Value, token.Position)
 	}
 
 	return &CompiledTemplate{
@@ -140,32 +140,32 @@ type parserCursor struct {
 	index  int
 }
 
-func (c *parserCursor) hasNext() bool {
-	return c.index < len(c.tokens)
+func (cursor *parserCursor) hasNext() bool {
+	return cursor.index < len(cursor.tokens)
 }
 
-func (c *parserCursor) peek() Token {
-	if !c.hasNext() {
+func (cursor *parserCursor) peek() Token {
+	if !cursor.hasNext() {
 		return Token{}
 	}
-	return c.tokens[c.index]
+	return cursor.tokens[cursor.index]
 }
 
-func (c *parserCursor) next() Token {
-	t := c.peek()
-	c.index++
-	return t
+func (cursor *parserCursor) next() Token {
+	token := cursor.peek()
+	cursor.index++
+	return token
 }
 
-func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata map[string]any) (Node, error) {
-	return p.parseBlockWithLoopDepthDirect(cursor, stopToken, metadata, 0, false)
+func (parser *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata map[string]any) (Node, error) {
+	return parser.parseBlockWithLoopDepthDirect(cursor, stopToken, metadata, 0, false)
 }
 
-func (p *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenType, metadata map[string]any, loopDepth int) (Node, error) {
-	return p.parseBlockWithLoopDepthDirect(cursor, stopToken, metadata, loopDepth, false)
+func (parser *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenType, metadata map[string]any, loopDepth int) (Node, error) {
+	return parser.parseBlockWithLoopDepthDirect(cursor, stopToken, metadata, loopDepth, false)
 }
 
-func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken TokenType, metadata map[string]any, loopDepth int, inSwitchClauseDirect bool) (Node, error) {
+func (parser *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken TokenType, metadata map[string]any, loopDepth int, inSwitchClauseDirect bool) (Node, error) {
 	var nodes []Node
 
 	for cursor.hasNext() {
@@ -191,25 +191,25 @@ func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken T
 		case TokenComment:
 			// Ignore comments
 		case TokenExpression:
-			exprNode, err := p.parseExpression(token.Value)
+			exprNode, err := parser.parseExpression(token.Value)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, exprNode)
 		case TokenIf:
-			ifNode, err := p.parseIf(token, cursor, metadata, loopDepth)
+			ifNode, err := parser.parseIf(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, ifNode)
 		case TokenEach:
-			eachNode, err := p.parseEach(token, cursor, metadata, loopDepth)
+			eachNode, err := parser.parseEach(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, eachNode)
 		case TokenFor:
-			forNode, err := p.parseFor(token, cursor, metadata, loopDepth)
+			forNode, err := parser.parseFor(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -233,27 +233,27 @@ func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken T
 			nodes = append(nodes, &ModelNode{ModelType: modelType})
 		case TokenField:
 			propertyPath := strings.TrimSpace(token.Value[len("field "):])
-			nodes = append(nodes, &FieldNode{PropertyPath: propertyPath, Evaluator: p.evaluator})
+			nodes = append(nodes, &FieldNode{PropertyPath: propertyPath, Evaluator: parser.evaluator})
 		case TokenDisplay:
 			propertyPath := strings.TrimSpace(token.Value[len("display "):])
-			nodes = append(nodes, &DisplayNode{PropertyPath: propertyPath, Evaluator: p.evaluator})
+			nodes = append(nodes, &DisplayNode{PropertyPath: propertyPath, Evaluator: parser.evaluator})
 		case TokenEditor:
 			propertyPath := strings.TrimSpace(token.Value[len("editor "):])
-			nodes = append(nodes, &EditorNode{PropertyPath: propertyPath, Evaluator: p.evaluator})
+			nodes = append(nodes, &EditorNode{PropertyPath: propertyPath, Evaluator: parser.evaluator})
 		case TokenMacro:
-			macroNode, err := p.parseMacro(token, cursor, metadata)
+			macroNode, err := parser.parseMacro(token, cursor, metadata)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, macroNode)
 		case TokenCall:
-			callNode, err := p.parseCallMacro(token)
+			callNode, err := parser.parseCallMacro(token)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, callNode)
 		case TokenSeparator:
-			sepBody, err := p.parseBlockWithLoopDepthDirect(cursor, TokenEndSeparator, metadata, loopDepth, false)
+			sepBody, err := parser.parseBlockWithLoopDepthDirect(cursor, TokenEndSeparator, metadata, loopDepth, false)
 			if err != nil {
 				return nil, err
 			}
@@ -262,27 +262,27 @@ func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken T
 			}
 			nodes = append(nodes, &SeparatorNode{Body: sepBody})
 		case TokenFragment:
-			fragNode, err := p.parseFragment(token, cursor, metadata, loopDepth)
+			fragNode, err := parser.parseFragment(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, fragNode)
 		case TokenMinify:
-			minNode, err := p.parseMinify(token, cursor, metadata, loopDepth)
+			minNode, err := parser.parseMinify(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, minNode)
 		case TokenPage:
-			p.parsePageMetadata(token, metadata)
+			parser.parsePageMetadata(token, metadata)
 		case TokenAttempt:
-			attNode, err := p.parseAttempt(token, cursor, metadata, loopDepth)
+			attNode, err := parser.parseAttempt(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, attNode)
 		case TokenInclude:
-			incNode, err := p.parseInclude(token)
+			incNode, err := parser.parseInclude(token)
 			if err != nil {
 				return nil, err
 			}
@@ -291,7 +291,7 @@ func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken T
 			secName := strings.TrimSpace(token.Value[len("yield "):])
 			nodes = append(nodes, &YieldNode{SectionName: secName})
 		case TokenComponent:
-			compNode, err := p.parseComponent(token, cursor, metadata, loopDepth)
+			compNode, err := parser.parseComponent(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -300,7 +300,7 @@ func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken T
 			slotName := strings.TrimSpace(token.Value[len("slot "):])
 			nodes = append(nodes, &SlotNode{SlotName: slotName})
 		case TokenSwitch:
-			swNode, err := p.parseSwitch(token, cursor, metadata, loopDepth)
+			swNode, err := parser.parseSwitch(token, cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -311,43 +311,43 @@ func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken T
 			}
 			nodes = append(nodes, &fallthroughNode{Position: token.Position})
 		case TokenPWA:
-			pwaNode, err := p.parsePWA(token)
+			pwaNode, err := parser.parsePWA(token)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, pwaNode)
 		case TokenHTMX:
-			htmxNode, err := p.parseHTMX(token)
+			htmxNode, err := parser.parseHTMX(token)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, htmxNode)
 		case TokenHXAttr:
-			hxAttrNode, err := p.parseHXAttr(token)
+			hxAttrNode, err := parser.parseHXAttr(token)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, hxAttrNode)
 		case TokenAlpine:
-			alpineNode, err := p.parseAlpine(token)
+			alpineNode, err := parser.parseAlpine(token)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, alpineNode)
 		case TokenState:
-			stateNode, err := p.parseState(token)
+			stateNode, err := parser.parseState(token)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, stateNode)
 		case TokenAlpineAttr:
-			alpineAttrNode, err := p.parseAlpineAttr(token)
+			alpineAttrNode, err := parser.parseAlpineAttr(token)
 			if err != nil {
 				return nil, err
 			}
 			nodes = append(nodes, alpineAttrNode)
 		default:
-			exprNode, err := p.parseExpression(token.Value)
+			exprNode, err := parser.parseExpression(token.Value)
 			if err != nil {
 				return nil, err
 			}
@@ -358,47 +358,47 @@ func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken T
 	return &BlockNode{Children: nodes}, nil
 }
 
-func (p *Parser) parseExpression(val string) (Node, error) {
-	trimmed := strings.TrimSpace(val)
+func (parser *Parser) parseExpression(rawValue string) (Node, error) {
+	trimmed := strings.TrimSpace(rawValue)
 
 	var condition string
-	ifIdx := findOutputIfIndex(trimmed)
-	if ifIdx != -1 {
-		condition = strings.TrimSpace(trimmed[ifIdx+2:])
-		trimmed = strings.TrimSpace(trimmed[:ifIdx])
+	ifIndex := findOutputIfIndex(trimmed)
+	if ifIndex != -1 {
+		condition = strings.TrimSpace(trimmed[ifIndex+2:])
+		trimmed = strings.TrimSpace(trimmed[:ifIndex])
 	}
 
 	var mode OutputMode
-	var expr string
+	var expressionText string
 
 	if strings.HasPrefix(trimmed, "html ") {
 		mode = ModeTrustedHtml
-		expr = strings.TrimSpace(trimmed[len("html "):])
+		expressionText = strings.TrimSpace(trimmed[len("html "):])
 	} else if strings.HasPrefix(trimmed, "attr ") {
 		mode = ModeAttributeEscaped
-		expr = strings.TrimSpace(trimmed[len("attr "):])
+		expressionText = strings.TrimSpace(trimmed[len("attr "):])
 	} else if strings.HasPrefix(trimmed, "url ") {
 		mode = ModeUrlEncoded
-		expr = strings.TrimSpace(trimmed[len("url "):])
+		expressionText = strings.TrimSpace(trimmed[len("url "):])
 	} else if strings.HasPrefix(trimmed, "json ") {
 		mode = ModeJsonEncoded
-		expr = strings.TrimSpace(trimmed[len("json "):])
+		expressionText = strings.TrimSpace(trimmed[len("json "):])
 	} else {
 		mode = ModeHtmlEscaped
-		expr = trimmed
+		expressionText = trimmed
 	}
 
 	return &ExpressionNode{
-		Expression: expr,
+		Expression: expressionText,
 		Mode:       mode,
-		Evaluator:  p.evaluator,
+		Evaluator:  parser.evaluator,
 		Condition:  condition,
 	}, nil
 }
 
-func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+func (parser *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	condition := strings.TrimSpace(ifToken.Value[len("if "):])
-	thenBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
+	thenBlock, err := parser.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -411,7 +411,7 @@ func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[strin
 		if current.Type == TokenElseIf {
 			cursor.next()
 			cond := strings.TrimSpace(current.Value[len("else if "):])
-			body, err := p.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
+			body, err := parser.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -419,7 +419,7 @@ func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[strin
 		} else if current.Type == TokenElse {
 			cursor.next()
 			var err error
-			elseBlock, err = p.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
+			elseBlock, err = parser.parseBlockWithLoopDepth(cursor, TokenEndIf, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
@@ -440,11 +440,11 @@ func (p *Parser) parseIf(ifToken Token, cursor *parserCursor, metadata map[strin
 		ThenBlock:      thenBlock,
 		ElseIfBranches: elseIfBranches,
 		ElseBlock:      elseBlock,
-		Evaluator:      p.evaluator,
+		Evaluator:      parser.evaluator,
 	}, nil
 }
 
-func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+func (parser *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	statement := strings.TrimSpace(eachToken.Value[len("each "):])
 	inIndex := strings.Index(statement, " in ")
 	if inIndex == -1 {
@@ -454,7 +454,7 @@ func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[s
 	leftSide := strings.TrimSpace(statement[:inIndex])
 	collectionExpr := strings.TrimSpace(statement[inIndex+4:])
 
-	bodyBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndEach, metadata, loopDepth+1)
+	bodyBlock, err := parser.parseBlockWithLoopDepth(cursor, TokenEndEach, metadata, loopDepth+1)
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +463,7 @@ func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[s
 	if cursor.hasNext() && cursor.peek().Type == TokenElse {
 		cursor.next()
 		var err error
-		elseBlock, err = p.parseBlockWithLoopDepth(cursor, TokenEndEach, metadata, loopDepth)
+		elseBlock, err = parser.parseBlockWithLoopDepth(cursor, TokenEndEach, metadata, loopDepth)
 		if err != nil {
 			return nil, err
 		}
@@ -480,10 +480,10 @@ func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[s
 
 	// Separate SeparatorNode from body block children if present
 	var separatorNode Node
-	if block, ok := bodyBlock.(*BlockNode); ok {
+	if block, isBlockNode := bodyBlock.(*BlockNode); isBlockNode {
 		var bodyChildren []Node
 		for _, child := range block.Children {
-			if sep, ok := child.(*SeparatorNode); ok {
+			if sep, isSeparator := child.(*SeparatorNode); isSeparator {
 				separatorNode = sep
 			} else {
 				bodyChildren = append(bodyChildren, child)
@@ -511,19 +511,19 @@ func (p *Parser) parseEach(eachToken Token, cursor *parserCursor, metadata map[s
 		BodyBlock:            bodyBlock,
 		ElseBlock:            elseBlock,
 		SeparatorNode:        separatorNode,
-		Evaluator:            p.evaluator,
+		Evaluator:            parser.evaluator,
 		IsMapLoop:            isMapLoop,
 	}, nil
 }
 
-func (p *Parser) parseFor(forToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+func (parser *Parser) parseFor(forToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	statement := strings.TrimSpace(forToken.Value[len("for "):])
-	varName, startExpr, endExpr, stepExpr, err := p.parseForHeader(statement, forToken.Position)
+	varName, startExpr, endExpr, stepExpr, err := parser.parseForHeader(statement, forToken.Position)
 	if err != nil {
 		return nil, err
 	}
 
-	bodyBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndFor, metadata, loopDepth+1)
+	bodyBlock, err := parser.parseBlockWithLoopDepth(cursor, TokenEndFor, metadata, loopDepth+1)
 	if err != nil {
 		return nil, err
 	}
@@ -532,7 +532,7 @@ func (p *Parser) parseFor(forToken Token, cursor *parserCursor, metadata map[str
 	if cursor.hasNext() && cursor.peek().Type == TokenElse {
 		cursor.next()
 		var err error
-		elseBlock, err = p.parseBlockWithLoopDepth(cursor, TokenEndFor, metadata, loopDepth)
+		elseBlock, err = parser.parseBlockWithLoopDepth(cursor, TokenEndFor, metadata, loopDepth)
 		if err != nil {
 			return nil, err
 		}
@@ -548,10 +548,10 @@ func (p *Parser) parseFor(forToken Token, cursor *parserCursor, metadata map[str
 	}
 
 	var separatorNode Node
-	if block, ok := bodyBlock.(*BlockNode); ok {
+	if block, isBlockNode := bodyBlock.(*BlockNode); isBlockNode {
 		var bodyChildren []Node
 		for _, child := range block.Children {
-			if sep, ok := child.(*SeparatorNode); ok {
+			if sep, isSeparator := child.(*SeparatorNode); isSeparator {
 				separatorNode = sep
 			} else {
 				bodyChildren = append(bodyChildren, child)
@@ -568,72 +568,72 @@ func (p *Parser) parseFor(forToken Token, cursor *parserCursor, metadata map[str
 		BodyBlock:     bodyBlock,
 		ElseBlock:     elseBlock,
 		SeparatorNode: separatorNode,
-		Evaluator:     p.evaluator,
+		Evaluator:     parser.evaluator,
 		Position:      forToken.Position,
 	}, nil
 }
 
-func (p *Parser) parseForHeader(statement string, pos int) (varName, startExpr, endExpr, stepExpr string, err error) {
+func (parser *Parser) parseForHeader(statement string, position int) (varName, startExpr, endExpr, stepExpr string, err error) {
 	if statement == "" {
-		return "", "", "", "", fmt.Errorf("missing loop variable at position %d", pos)
+		return "", "", "", "", fmt.Errorf("missing loop variable at position %d", position)
 	}
 
-	fromIdx := p.findTopLevelKeyword(statement, "from")
-	if fromIdx == -1 {
-		return "", "", "", "", fmt.Errorf("missing from in for loop at position %d", pos)
+	fromIndex := parser.findTopLevelKeyword(statement, "from")
+	if fromIndex == -1 {
+		return "", "", "", "", fmt.Errorf("missing from in for loop at position %d", position)
 	}
 
-	varName = strings.TrimSpace(statement[:fromIdx])
+	varName = strings.TrimSpace(statement[:fromIndex])
 	if varName == "" {
-		return "", "", "", "", fmt.Errorf("missing loop variable at position %d", pos)
+		return "", "", "", "", fmt.Errorf("missing loop variable at position %d", position)
 	}
 
-	rest := strings.TrimSpace(statement[fromIdx+len("from"):])
+	restStatement := strings.TrimSpace(statement[fromIndex+len("from"):])
 
-	toIdx := p.findTopLevelKeyword(rest, "to")
-	if toIdx == -1 {
-		return "", "", "", "", fmt.Errorf("missing to in for loop at position %d", pos)
+	toIndex := parser.findTopLevelKeyword(restStatement, "to")
+	if toIndex == -1 {
+		return "", "", "", "", fmt.Errorf("missing to in for loop at position %d", position)
 	}
 
-	startExpr = strings.TrimSpace(rest[:toIdx])
+	startExpr = strings.TrimSpace(restStatement[:toIndex])
 	if startExpr == "" {
-		return "", "", "", "", fmt.Errorf("invalid start expression at position %d", pos)
+		return "", "", "", "", fmt.Errorf("invalid start expression at position %d", position)
 	}
 
-	rest2 := strings.TrimSpace(rest[toIdx+len("to"):])
+	stepStatement := strings.TrimSpace(restStatement[toIndex+len("to"):])
 
-	stepIdx := p.findTopLevelKeyword(rest2, "step")
-	if stepIdx != -1 {
-		endExpr = strings.TrimSpace(rest2[:stepIdx])
-		stepExpr = strings.TrimSpace(rest2[stepIdx+len("step"):])
+	stepIndex := parser.findTopLevelKeyword(stepStatement, "step")
+	if stepIndex != -1 {
+		endExpr = strings.TrimSpace(stepStatement[:stepIndex])
+		stepExpr = strings.TrimSpace(stepStatement[stepIndex+len("step"):])
 		if stepExpr == "" {
-			return "", "", "", "", fmt.Errorf("invalid step expression at position %d", pos)
+			return "", "", "", "", fmt.Errorf("invalid step expression at position %d", position)
 		}
 	} else {
-		endExpr = rest2
+		endExpr = stepStatement
 	}
 
 	if endExpr == "" {
-		return "", "", "", "", fmt.Errorf("invalid end expression at position %d", pos)
+		return "", "", "", "", fmt.Errorf("invalid end expression at position %d", position)
 	}
 
 	return varName, startExpr, endExpr, stepExpr, nil
 }
 
-func (p *Parser) findTopLevelKeyword(s string, keyword string) int {
+func (parser *Parser) findTopLevelKeyword(sourceString string, keyword string) int {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 	bracketDepth := 0
 
-	kwLen := len(keyword)
-	for i := 0; i <= len(s)-kwLen; i++ {
-		c := s[i]
-		if c == '\'' && !insideDoubleQuote {
+	keywordLength := len(keyword)
+	for characterIndex := 0; characterIndex <= len(sourceString)-keywordLength; characterIndex++ {
+		character := sourceString[characterIndex]
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if c == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -641,19 +641,19 @@ func (p *Parser) findTopLevelKeyword(s string, keyword string) int {
 			continue
 		}
 
-		if c == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if c == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
-		if c == '[' {
+		if character == '[' {
 			bracketDepth++
 			continue
 		}
-		if c == ']' {
+		if character == ']' {
 			bracketDepth--
 			continue
 		}
@@ -661,40 +661,40 @@ func (p *Parser) findTopLevelKeyword(s string, keyword string) int {
 			continue
 		}
 
-		if strings.HasPrefix(s[i:], keyword) {
-			beforeIsBoundary := i == 0 || isWhitespaceChar(s[i-1])
-			afterIndex := i + kwLen
-			afterIsBoundary := afterIndex >= len(s) || isWhitespaceChar(s[afterIndex])
+		if strings.HasPrefix(sourceString[characterIndex:], keyword) {
+			beforeIsBoundary := characterIndex == 0 || isWhitespaceChar(sourceString[characterIndex-1])
+			afterIndex := characterIndex + keywordLength
+			afterIsBoundary := afterIndex >= len(sourceString) || isWhitespaceChar(sourceString[afterIndex])
 
 			if beforeIsBoundary && afterIsBoundary {
-				return i
+				return characterIndex
 			}
 		}
 	}
 	return -1
 }
 
-func (p *Parser) parseMacro(macroToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
-	val := strings.TrimSpace(macroToken.Value[len("macro "):])
-	openParen := strings.IndexByte(val, '(')
-	closeParen := strings.IndexByte(val, ')')
+func (parser *Parser) parseMacro(macroToken Token, cursor *parserCursor, metadata map[string]any) (Node, error) {
+	rawValue := strings.TrimSpace(macroToken.Value[len("macro "):])
+	openParenIndex := strings.IndexByte(rawValue, '(')
+	closeParenIndex := strings.IndexByte(rawValue, ')')
 
-	var name string
-	var params []string
+	var macroName string
+	var macroParameters []string
 
-	if openParen != -1 && closeParen > openParen {
-		name = strings.TrimSpace(val[:openParen])
-		argsStr := strings.TrimSpace(val[openParen+1 : closeParen])
-		if argsStr != "" {
-			for _, arg := range strings.Split(argsStr, ",") {
-				params = append(params, strings.TrimSpace(arg))
+	if openParenIndex != -1 && closeParenIndex > openParenIndex {
+		macroName = strings.TrimSpace(rawValue[:openParenIndex])
+		argumentsString := strings.TrimSpace(rawValue[openParenIndex+1 : closeParenIndex])
+		if argumentsString != "" {
+			for _, argument := range strings.Split(argumentsString, ",") {
+				macroParameters = append(macroParameters, strings.TrimSpace(argument))
 			}
 		}
 	} else {
-		name = val
+		macroName = rawValue
 	}
 
-	body, err := p.parseBlock(cursor, TokenEndMacro, metadata)
+	body, err := parser.parseBlock(cursor, TokenEndMacro, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -702,45 +702,44 @@ func (p *Parser) parseMacro(macroToken Token, cursor *parserCursor, metadata map
 	if cursor.hasNext() && cursor.peek().Type == TokenEndMacro {
 		cursor.next()
 	} else {
-		return nil, fmt.Errorf("missing closing |/macro| for macro %q", name)
+		return nil, fmt.Errorf("missing closing |/macro| for macro %q", macroName)
 	}
 
 	return &MacroNode{
-		Name:       name,
-		Parameters: params,
+		Name:       macroName,
+		Parameters: macroParameters,
 		Body:       body,
 	}, nil
 }
 
-func (p *Parser) parseCallMacro(callToken Token) (Node, error) {
-	val := strings.TrimSpace(callToken.Value[len("call "):])
-	openParen := strings.IndexByte(val, '(')
-	closeParen := strings.LastIndexByte(val, ')')
+func (parser *Parser) parseCallMacro(callToken Token) (Node, error) {
+	rawValue := strings.TrimSpace(callToken.Value[len("call "):])
+	openParenIndex := strings.IndexByte(rawValue, '(')
+	closeParenIndex := strings.LastIndexByte(rawValue, ')')
 
-	var name string
-	var args []string
+	var macroName string
+	var argumentExpressions []string
 
-	if openParen != -1 && closeParen > openParen {
-		name = strings.TrimSpace(val[:openParen])
-		argsStr := strings.TrimSpace(val[openParen+1 : closeParen])
-		if argsStr != "" {
-			// Split by top level comma inside macro args
-			args = p.evaluator.splitByTopLevelComma(argsStr)
+	if openParenIndex != -1 && closeParenIndex > openParenIndex {
+		macroName = strings.TrimSpace(rawValue[:openParenIndex])
+		argumentsString := strings.TrimSpace(rawValue[openParenIndex+1 : closeParenIndex])
+		if argumentsString != "" {
+			argumentExpressions = parser.evaluator.splitByTopLevelComma(argumentsString)
 		}
 	} else {
-		name = val
+		macroName = rawValue
 	}
 
 	return &CallNode{
-		MacroName:           name,
-		ArgumentExpressions: args,
-		Evaluator:           p.evaluator,
+		MacroName:           macroName,
+		ArgumentExpressions: argumentExpressions,
+		Evaluator:           parser.evaluator,
 	}, nil
 }
 
-func (p *Parser) parseFragment(fragmentToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
-	name := strings.TrimSpace(fragmentToken.Value[len("fragment "):])
-	body, err := p.parseBlockWithLoopDepth(cursor, TokenEndFragment, metadata, loopDepth)
+func (parser *Parser) parseFragment(fragmentToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	fragmentName := strings.TrimSpace(fragmentToken.Value[len("fragment "):])
+	body, err := parser.parseBlockWithLoopDepth(cursor, TokenEndFragment, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -748,17 +747,17 @@ func (p *Parser) parseFragment(fragmentToken Token, cursor *parserCursor, metada
 	if cursor.hasNext() && cursor.peek().Type == TokenEndFragment {
 		cursor.next()
 	} else {
-		return nil, fmt.Errorf("missing closing |/fragment| for fragment %q", name)
+		return nil, fmt.Errorf("missing closing |/fragment| for fragment %q", fragmentName)
 	}
 
 	return &FragmentNode{
-		Name: name,
+		Name: fragmentName,
 		Body: body,
 	}, nil
 }
 
-func (p *Parser) parseMinify(minifyToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
-	body, err := p.parseBlockWithLoopDepth(cursor, TokenEndMinify, metadata, loopDepth)
+func (parser *Parser) parseMinify(minifyToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	body, err := parser.parseBlockWithLoopDepth(cursor, TokenEndMinify, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -772,18 +771,18 @@ func (p *Parser) parseMinify(minifyToken Token, cursor *parserCursor, metadata m
 	return &MinifyNode{Body: body}, nil
 }
 
-func (p *Parser) parsePageMetadata(token Token, metadata map[string]any) {
-	val := strings.TrimSpace(token.Value[len("page "):])
-	eqIndex := strings.IndexByte(val, '=')
-	if eqIndex != -1 {
-		key := strings.TrimSpace(val[:eqIndex])
-		valueStr := strings.TrimSpace(val[eqIndex+1:])
-		value := p.parseMetadataValue(valueStr)
-		metadata[key] = value
+func (parser *Parser) parsePageMetadata(token Token, metadata map[string]any) {
+	rawValue := strings.TrimSpace(token.Value[len("page "):])
+	equalsIndex := strings.IndexByte(rawValue, '=')
+	if equalsIndex != -1 {
+		key := strings.TrimSpace(rawValue[:equalsIndex])
+		valueString := strings.TrimSpace(rawValue[equalsIndex+1:])
+		parsedValue := parser.parseMetadataValue(valueString)
+		metadata[key] = parsedValue
 	}
 }
 
-func (p *Parser) parseMetadataValue(str string) any {
+func (parser *Parser) parseMetadataValue(str string) any {
 	if (strings.HasPrefix(str, "\"") && strings.HasSuffix(str, "\"")) ||
 		(strings.HasPrefix(str, "'") && strings.HasSuffix(str, "'")) {
 		return str[1 : len(str)-1]
@@ -795,29 +794,29 @@ func (p *Parser) parseMetadataValue(str string) any {
 		return false
 	}
 	if strings.HasPrefix(str, "[") && strings.HasSuffix(str, "]") {
-		inner := strings.TrimSpace(str[1 : len(str)-1])
-		if inner == "" {
+		innerString := strings.TrimSpace(str[1 : len(str)-1])
+		if innerString == "" {
 			return []string{}
 		}
-		var items []string
-		for _, item := range strings.Split(inner, ",") {
-			trimmed := strings.TrimSpace(item)
-			if (strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"")) ||
-				(strings.HasPrefix(trimmed, "'") && strings.HasSuffix(trimmed, "'")) {
-				trimmed = trimmed[1 : len(trimmed)-1]
+		var parsedItems []string
+		for _, item := range strings.Split(innerString, ",") {
+			trimmedItem := strings.TrimSpace(item)
+			if (strings.HasPrefix(trimmedItem, "\"") && strings.HasSuffix(trimmedItem, "\"")) ||
+				(strings.HasPrefix(trimmedItem, "'") && strings.HasSuffix(trimmedItem, "'")) {
+				trimmedItem = trimmedItem[1 : len(trimmedItem)-1]
 			}
-			items = append(items, trimmed)
+			parsedItems = append(parsedItems, trimmedItem)
 		}
-		return items
+		return parsedItems
 	}
-	if i, err := strconv.Atoi(str); err == nil {
-		return i
+	if parsedInt, err := strconv.Atoi(str); err == nil {
+		return parsedInt
 	}
 	return str
 }
 
-func (p *Parser) parseAttempt(attemptToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
-	body, err := p.parseBlockWithLoopDepth(cursor, TokenRecover, metadata, loopDepth)
+func (parser *Parser) parseAttempt(attemptToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	body, err := parser.parseBlockWithLoopDepth(cursor, TokenRecover, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -828,12 +827,12 @@ func (p *Parser) parseAttempt(attemptToken Token, cursor *parserCursor, metadata
 
 	recoverToken := cursor.next()
 	var errorVarName string
-	val := strings.TrimSpace(recoverToken.Value[len("recover"):])
-	if strings.HasPrefix(val, "as ") {
-		errorVarName = strings.TrimSpace(val[len("as "):])
+	rawValue := strings.TrimSpace(recoverToken.Value[len("recover"):])
+	if strings.HasPrefix(rawValue, "as ") {
+		errorVarName = strings.TrimSpace(rawValue[len("as "):])
 	}
 
-	recoverBlock, err := p.parseBlockWithLoopDepth(cursor, TokenEndAttempt, metadata, loopDepth)
+	recoverBlock, err := parser.parseBlockWithLoopDepth(cursor, TokenEndAttempt, metadata, loopDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -851,12 +850,12 @@ func (p *Parser) parseAttempt(attemptToken Token, cursor *parserCursor, metadata
 	}, nil
 }
 
-func (p *Parser) skipWhitespaceAndComments(cursor *parserCursor) {
+func (parser *Parser) skipWhitespaceAndComments(cursor *parserCursor) {
 	for cursor.hasNext() {
-		tok := cursor.peek()
-		if tok.Type == TokenText && strings.TrimSpace(tok.Value) == "" {
+		token := cursor.peek()
+		if token.Type == TokenText && strings.TrimSpace(token.Value) == "" {
 			cursor.next()
-		} else if tok.Type == TokenComment {
+		} else if token.Type == TokenComment {
 			cursor.next()
 		} else {
 			break
@@ -864,71 +863,71 @@ func (p *Parser) skipWhitespaceAndComments(cursor *parserCursor) {
 	}
 }
 
-func (p *Parser) parseInclude(token Token) (Node, error) {
-	body := strings.TrimSpace(token.Value[len("include "):])
-	if body == "" {
+func (parser *Parser) parseInclude(token Token) (Node, error) {
+	rawValue := strings.TrimSpace(token.Value[len("include "):])
+	if rawValue == "" {
 		return nil, fmt.Errorf("|include| template name must not be empty at %d", token.Position)
 	}
 
-	withIdx := p.findIncludeWithIndex(body)
-	if withIdx == -1 {
+	withIndex := parser.findIncludeWithIndex(rawValue)
+	if withIndex == -1 {
 		return &IncludeNode{
-			TemplateName: body,
-			Evaluator:    p.evaluator,
+			TemplateName: rawValue,
+			Evaluator:    parser.evaluator,
 		}, nil
 	}
 
-	templateName := strings.TrimSpace(body[:withIdx])
-	modelExpr := strings.TrimSpace(body[withIdx+len(" with "):])
+	templateName := strings.TrimSpace(rawValue[:withIndex])
+	modelExpression := strings.TrimSpace(rawValue[withIndex+len(" with "):])
 	if templateName == "" {
 		return nil, fmt.Errorf("|include| template name must not be empty at %d", token.Position)
 	}
-	if modelExpr == "" {
+	if modelExpression == "" {
 		return nil, fmt.Errorf("|include ... with| expression must not be empty at %d", token.Position)
 	}
 
 	return &IncludeNode{
 		TemplateName:    templateName,
-		ModelExpression: modelExpr,
-		Evaluator:       p.evaluator,
+		ModelExpression: modelExpression,
+		Evaluator:       parser.evaluator,
 	}, nil
 }
 
-func (p *Parser) findIncludeWithIndex(body string) int {
+func (parser *Parser) findIncludeWithIndex(sourceString string) int {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 
-	for i := 0; i <= len(body)-len(" with "); i++ {
-		current := body[i]
-		if current == '\'' && !insideDoubleQuote {
+	for characterIndex := 0; characterIndex <= len(sourceString)-len(" with "); characterIndex++ {
+		character := sourceString[characterIndex]
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
 		if insideSingleQuote || insideDoubleQuote {
 			continue
 		}
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
 
-		if parenthesisDepth == 0 && strings.HasPrefix(body[i:], " with ") {
-			return i
+		if parenthesisDepth == 0 && strings.HasPrefix(sourceString[characterIndex:], " with ") {
+			return characterIndex
 		}
 	}
 	return -1
 }
 
-func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+func (parser *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
 	compName := strings.TrimSpace(compToken.Value[len("component "):])
 	if compName == "" {
 		return nil, fmt.Errorf("component template name must not be empty at %d", compToken.Position)
@@ -936,23 +935,23 @@ func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata 
 
 	slots := make(map[string]Node)
 	for cursor.hasNext() && cursor.peek().Type != TokenEndComponent {
-		p.skipWhitespaceAndComments(cursor)
+		parser.skipWhitespaceAndComments(cursor)
 		if !cursor.hasNext() || cursor.peek().Type == TokenEndComponent {
 			break
 		}
 
-		tok := cursor.peek()
-		if tok.Type != TokenSlot {
-			return nil, fmt.Errorf("unexpected token %q outside slot blocks in component at %d", tok.Value, tok.Position)
+		token := cursor.peek()
+		if token.Type != TokenSlot {
+			return nil, fmt.Errorf("unexpected token %q outside slot blocks in component at %d", token.Value, token.Position)
 		}
 		cursor.next()
 
-		slotName := strings.TrimSpace(tok.Value[len("slot "):])
+		slotName := strings.TrimSpace(token.Value[len("slot "):])
 		if slotName == "" {
-			return nil, fmt.Errorf("slot name must not be empty at %d", tok.Position)
+			return nil, fmt.Errorf("slot name must not be empty at %d", token.Position)
 		}
 
-		slotBody, err := p.parseBlockWithLoopDepth(cursor, TokenEndSlot, metadata, loopDepth)
+		slotBody, err := parser.parseBlockWithLoopDepth(cursor, TokenEndSlot, metadata, loopDepth)
 		if err != nil {
 			return nil, err
 		}
@@ -978,75 +977,75 @@ func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata 
 	}, nil
 }
 
-func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
-	expr := strings.TrimSpace(strings.TrimPrefix(switchToken.Value, "switch"))
-	if expr == "" {
+func (parser *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	expressionText := strings.TrimSpace(strings.TrimPrefix(switchToken.Value, "switch"))
+	if expressionText == "" {
 		return nil, fmt.Errorf("switch expression must not be empty at position %d", switchToken.Position)
 	}
 
 	var clauses []SwitchClause
-	hasDefault := false
+	hasDefaultClause := false
 	seenFirstClause := false
 
 	for cursor.hasNext() {
-		tok := cursor.peek()
+		token := cursor.peek()
 
-		if tok.Type == TokenEndSwitch {
+		if token.Type == TokenEndSwitch {
 			break
 		}
 
-		if tok.Type == TokenCase || tok.Type == TokenDefault {
+		if token.Type == TokenCase || token.Type == TokenDefault {
 			seenFirstClause = true
 			cursor.next()
 
-			var kind SwitchClauseKind
-			var caseExpr string
-			if tok.Type == TokenCase {
-				kind = SwitchCaseClause
-				caseExpr = strings.TrimSpace(strings.TrimPrefix(tok.Value, "case"))
-				if caseExpr == "" {
-					return nil, fmt.Errorf("case expression must not be empty at position %d", tok.Position)
+			var clauseKind SwitchClauseKind
+			var caseExpression string
+			if token.Type == TokenCase {
+				clauseKind = SwitchCaseClause
+				caseExpression = strings.TrimSpace(strings.TrimPrefix(token.Value, "case"))
+				if caseExpression == "" {
+					return nil, fmt.Errorf("case expression must not be empty at position %d", token.Position)
 				}
 			} else {
-				kind = SwitchDefaultClause
-				if hasDefault {
-					return nil, fmt.Errorf("switch cannot contain more than one default clause at position %d", tok.Position)
+				clauseKind = SwitchDefaultClause
+				if hasDefaultClause {
+					return nil, fmt.Errorf("switch cannot contain more than one default clause at position %d", token.Position)
 				}
-				hasDefault = true
+				hasDefaultClause = true
 			}
 
-			clauseBody, fallthroughPos, hasFallthrough, err := p.parseSwitchClauseBody(cursor, metadata, loopDepth)
+			clauseBody, fallthroughPos, hasFallthrough, err := parser.parseSwitchClauseBody(cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 
 			clauses = append(clauses, SwitchClause{
-				Kind:              kind,
-				Expression:        caseExpr,
+				Kind:              clauseKind,
+				Expression:        caseExpression,
 				Body:              clauseBody,
 				AllowsFallthrough: hasFallthrough,
 				FallthroughPos:    fallthroughPos,
-				SourcePosition:    tok.Position,
+				SourcePosition:    token.Position,
 			})
 			continue
 		}
 
 		if !seenFirstClause {
-			if tok.Type == TokenText {
-				if strings.TrimSpace(tok.Value) != "" {
-					return nil, fmt.Errorf("unexpected content before first switch clause at position %d", tok.Position)
+			if token.Type == TokenText {
+				if strings.TrimSpace(token.Value) != "" {
+					return nil, fmt.Errorf("unexpected content before first switch clause at position %d", token.Position)
 				}
 				cursor.next()
 				continue
 			}
-			if tok.Type == TokenComment {
+			if token.Type == TokenComment {
 				cursor.next()
 				continue
 			}
-			return nil, fmt.Errorf("unexpected content before first switch clause at position %d", tok.Position)
+			return nil, fmt.Errorf("unexpected content before first switch clause at position %d", token.Position)
 		}
 
-		return nil, fmt.Errorf("misplaced directive |%s| inside switch at position %d", tok.Value, tok.Position)
+		return nil, fmt.Errorf("misplaced directive |%s| inside switch at position %d", token.Value, token.Position)
 	}
 
 	if cursor.hasNext() && cursor.peek().Type == TokenEndSwitch {
@@ -1063,73 +1062,73 @@ func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata m
 	}
 
 	return &SwitchNode{
-		Expression:     expr,
+		Expression:     expressionText,
 		Clauses:        clauses,
-		Evaluator:      p.evaluator,
+		Evaluator:      parser.evaluator,
 		SourcePosition: switchToken.Position,
 	}, nil
 }
 
-func (p *Parser) parseSwitchClauseBody(cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, int, bool, error) {
-	bodyNode, err := p.parseBlockWithLoopDepthDirect(cursor, TokenEndSwitch, metadata, loopDepth, true)
+func (parser *Parser) parseSwitchClauseBody(cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, int, bool, error) {
+	bodyNode, err := parser.parseBlockWithLoopDepthDirect(cursor, TokenEndSwitch, metadata, loopDepth, true)
 	if err != nil {
 		return nil, 0, false, err
 	}
 
-	var children []Node
-	if block, ok := bodyNode.(*BlockNode); ok {
-		children = block.Children
+	var childNodes []Node
+	if block, isBlockNode := bodyNode.(*BlockNode); isBlockNode {
+		childNodes = block.Children
 	} else if bodyNode != nil {
-		children = []Node{bodyNode}
+		childNodes = []Node{bodyNode}
 	}
 
 	var cleanChildren []Node
-	var ftNode *fallthroughNode
-	ftIndex := -1
+	var fallthroughItem *fallthroughNode
+	fallthroughIndex := -1
 
-	for index, child := range children {
-		if ft, ok := child.(*fallthroughNode); ok {
-			if ftNode != nil {
+	for index, child := range childNodes {
+		if ft, isFallthrough := child.(*fallthroughNode); isFallthrough {
+			if fallthroughItem != nil {
 				return nil, ft.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", ft.Position)
 			}
-			ftNode = ft
-			ftIndex = index
+			fallthroughItem = ft
+			fallthroughIndex = index
 		} else {
 			cleanChildren = append(cleanChildren, child)
 		}
 	}
 
-	if ftNode != nil {
-		for i := ftIndex + 1; i < len(children); i++ {
-			child := children[i]
-			if txt, ok := child.(*TextNode); ok {
+	if fallthroughItem != nil {
+		for index := fallthroughIndex + 1; index < len(childNodes); index++ {
+			child := childNodes[index]
+			if txt, isTextNode := child.(*TextNode); isTextNode {
 				if strings.TrimSpace(string(txt.Value)) != "" {
-					return nil, ftNode.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", ftNode.Position)
+					return nil, fallthroughItem.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", fallthroughItem.Position)
 				}
 			} else {
-				return nil, ftNode.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", ftNode.Position)
+				return nil, fallthroughItem.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", fallthroughItem.Position)
 			}
 		}
 
-		return &BlockNode{Children: cleanChildren}, ftNode.Position, true, nil
+		return &BlockNode{Children: cleanChildren}, fallthroughItem.Position, true, nil
 	}
 
 	return &BlockNode{Children: cleanChildren}, 0, false, nil
 }
 
-func findOutputIfIndex(source string) int {
+func findOutputIfIndex(sourceString string) int {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 
-	for index := 0; index <= len(source)-len("if"); index++ {
-		current := source[index]
+	for characterIndex := 0; characterIndex <= len(sourceString)-len("if"); characterIndex++ {
+		character := sourceString[characterIndex]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -1137,11 +1136,11 @@ func findOutputIfIndex(source string) int {
 			continue
 		}
 
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
@@ -1149,36 +1148,36 @@ func findOutputIfIndex(source string) int {
 			continue
 		}
 
-		if strings.HasPrefix(source[index:], "if") {
-			beforeIsBoundary := index == 0 || isWhitespaceChar(source[index-1])
-			afterIndex := index + len("if")
-			afterIsBoundary := afterIndex >= len(source) || isWhitespaceChar(source[afterIndex])
+		if strings.HasPrefix(sourceString[characterIndex:], "if") {
+			beforeIsBoundary := characterIndex == 0 || isWhitespaceChar(sourceString[characterIndex-1])
+			afterIndex := characterIndex + len("if")
+			afterIsBoundary := afterIndex >= len(sourceString) || isWhitespaceChar(sourceString[afterIndex])
 
 			if beforeIsBoundary && afterIsBoundary {
-				return index
+				return characterIndex
 			}
 		}
 	}
 	return -1
 }
 
-func (p *Parser) parsePWA(tok Token) (Node, error) {
-	val := strings.TrimSpace(tok.Value)
-	if strings.HasPrefix(val, "pwa") {
-		val = strings.TrimSpace(val[3:])
+func (parser *Parser) parsePWA(token Token) (Node, error) {
+	directiveValue := strings.TrimSpace(token.Value)
+	if strings.HasPrefix(directiveValue, "pwa") {
+		directiveValue = strings.TrimSpace(directiveValue[3:])
 	}
-	if strings.HasPrefix(val, "-meta") || strings.HasPrefix(val, "-tags") {
-		val = strings.TrimSpace(val[5:])
+	if strings.HasPrefix(directiveValue, "-meta") || strings.HasPrefix(directiveValue, "-tags") {
+		directiveValue = strings.TrimSpace(directiveValue[5:])
 	}
 
-	attrs := parseKeyValuePairs(val)
+	attributesMap := parseKeyValuePairs(directiveValue)
 
-	name := getAttr(attrs, "name", "title", "app-name", "application-name", "appName", "applicationName")
-	manifest := getAttr(attrs, "manifest", "manifest-url", "manifestUrl", "manifest_url")
-	theme := getAttr(attrs, "theme", "theme-color", "themeColor", "theme_color")
-	icon := getAttr(attrs, "icon", "icons", "apple-icon", "appleIcon", "apple-touch-icon", "appleTouchIcon", "touch-icon", "touchIcon")
-	sw := getAttr(attrs, "sw", "service-worker", "serviceWorker", "service_worker", "sw-path", "swPath")
-	statusColor := getAttr(attrs, "statusColor", "status-color", "status_color", "status-bar-style", "statusBarStyle", "status")
+	name := getAttr(attributesMap, "name", "title", "app-name", "application-name", "appName", "applicationName")
+	manifest := getAttr(attributesMap, "manifest", "manifest-url", "manifestUrl", "manifest_url")
+	theme := getAttr(attributesMap, "theme", "theme-color", "themeColor", "theme_color")
+	icon := getAttr(attributesMap, "icon", "icons", "apple-icon", "appleIcon", "apple-touch-icon", "appleTouchIcon", "touch-icon", "touchIcon")
+	sw := getAttr(attributesMap, "sw", "service-worker", "serviceWorker", "service_worker", "sw-path", "swPath")
+	statusColor := getAttr(attributesMap, "statusColor", "status-color", "status_color", "status-bar-style", "statusBarStyle", "status")
 
 	return &PWANode{
 		Name:        name,
@@ -1190,167 +1189,167 @@ func (p *Parser) parsePWA(tok Token) (Node, error) {
 	}, nil
 }
 
-func getAttr(attrs map[string]string, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := attrs[k]; ok && v != "" {
-			return v
+func getAttr(attributesMap map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value, exists := attributesMap[key]; exists && value != "" {
+			return value
 		}
 	}
 	return ""
 }
 
-func parseKeyValuePairs(input string) map[string]string {
-	result := make(map[string]string)
-	i := 0
-	for i < len(input) {
-		for i < len(input) && isWhitespaceChar(input[i]) {
-			i++
+func parseKeyValuePairs(inputString string) map[string]string {
+	resultMap := make(map[string]string)
+	characterIndex := 0
+	for characterIndex < len(inputString) {
+		for characterIndex < len(inputString) && isWhitespaceChar(inputString[characterIndex]) {
+			characterIndex++
 		}
-		if i >= len(input) {
+		if characterIndex >= len(inputString) {
 			break
 		}
 
-		eqIdx := strings.IndexByte(input[i:], '=')
-		if eqIdx == -1 {
-			for _, flag := range strings.Fields(input[i:]) {
-				result[flag] = "true"
+		equalsIndex := strings.IndexByte(inputString[characterIndex:], '=')
+		if equalsIndex == -1 {
+			for _, flagName := range strings.Fields(inputString[characterIndex:]) {
+				resultMap[flagName] = "true"
 			}
 			break
 		}
 
-		rawKeySegment := strings.TrimSpace(input[i : i+eqIdx])
-		fields := strings.Fields(rawKeySegment)
-		if len(fields) == 0 {
-			i += eqIdx + 1
+		rawKeySegment := strings.TrimSpace(inputString[characterIndex : characterIndex+equalsIndex])
+		fieldsList := strings.Fields(rawKeySegment)
+		if len(fieldsList) == 0 {
+			characterIndex += equalsIndex + 1
 			continue
 		}
 
-		for j := 0; j < len(fields)-1; j++ {
-			result[fields[j]] = "true"
+		for fieldIndex := 0; fieldIndex < len(fieldsList)-1; fieldIndex++ {
+			resultMap[fieldsList[fieldIndex]] = "true"
 		}
-		key := fields[len(fields)-1]
+		attributeKey := fieldsList[len(fieldsList)-1]
 
-		i += eqIdx + 1
+		characterIndex += equalsIndex + 1
 
-		for i < len(input) && isWhitespaceChar(input[i]) {
-			i++
+		for characterIndex < len(inputString) && isWhitespaceChar(inputString[characterIndex]) {
+			characterIndex++
 		}
-		if i >= len(input) {
-			result[key] = ""
+		if characterIndex >= len(inputString) {
+			resultMap[attributeKey] = ""
 			break
 		}
 
-		var val string
-		if input[i] == '\'' || input[i] == '"' {
-			quote := input[i]
-			i++
-			end := strings.IndexByte(input[i:], quote)
-			if end == -1 {
-				val = input[i:]
-				i = len(input)
+		var attributeValue string
+		if inputString[characterIndex] == '\'' || inputString[characterIndex] == '"' {
+			quoteChar := inputString[characterIndex]
+			characterIndex++
+			quoteEndIndex := strings.IndexByte(inputString[characterIndex:], quoteChar)
+			if quoteEndIndex == -1 {
+				attributeValue = inputString[characterIndex:]
+				characterIndex = len(inputString)
 			} else {
-				val = input[i : i+end]
-				i += end + 1
+				attributeValue = inputString[characterIndex : characterIndex+quoteEndIndex]
+				characterIndex += quoteEndIndex + 1
 			}
 		} else {
-			start := i
-			for i < len(input) && !isWhitespaceChar(input[i]) {
-				i++
+			startIndex := characterIndex
+			for characterIndex < len(inputString) && !isWhitespaceChar(inputString[characterIndex]) {
+				characterIndex++
 			}
-			val = input[start:i]
+			attributeValue = inputString[startIndex:characterIndex]
 		}
 
-		if key != "" {
-			result[key] = val
+		if attributeKey != "" {
+			resultMap[attributeKey] = attributeValue
 		}
 	}
-	return result
+	return resultMap
 }
 
-func (p *Parser) parseHTMX(tok Token) (Node, error) {
-	val := strings.TrimSpace(tok.Value)
-	if strings.HasPrefix(val, "htmx") {
-		val = strings.TrimSpace(val[4:])
+func (parser *Parser) parseHTMX(token Token) (Node, error) {
+	directiveValue := strings.TrimSpace(token.Value)
+	if strings.HasPrefix(directiveValue, "htmx") {
+		directiveValue = strings.TrimSpace(directiveValue[4:])
 	}
 
-	attrs := parseKeyValuePairs(val)
-	var exts []string
-	if extStr, ok := attrs["ext"]; ok && extStr != "" {
-		for _, e := range strings.Split(extStr, ",") {
-			if trimmed := strings.TrimSpace(e); trimmed != "" {
-				exts = append(exts, trimmed)
+	attributesMap := parseKeyValuePairs(directiveValue)
+	var extensionsList []string
+	if extString, exists := attributesMap["ext"]; exists && extString != "" {
+		for _, rawExt := range strings.Split(extString, ",") {
+			if trimmedExt := strings.TrimSpace(rawExt); trimmedExt != "" {
+				extensionsList = append(extensionsList, trimmedExt)
 			}
 		}
 	}
 
-	indicator := false
-	if indVal, ok := attrs["indicator"]; ok {
-		indicator = indVal == "true" || indVal == "1" || indVal == ""
+	indicatorEnabled := false
+	if indicatorValue, exists := attributesMap["indicator"]; exists {
+		indicatorEnabled = indicatorValue == "true" || indicatorValue == "1" || indicatorValue == ""
 	}
 
 	return &HTMXNode{
-		Src:        attrs["src"],
-		Extensions: exts,
-		Config:     attrs["config"],
-		Indicator:  indicator,
+		Src:        attributesMap["src"],
+		Extensions: extensionsList,
+		Config:     attributesMap["config"],
+		Indicator:  indicatorEnabled,
 	}, nil
 }
 
-func (p *Parser) parseHXAttr(tok Token) (Node, error) {
-	val := strings.TrimSpace(tok.Value)
-	method := "get"
-	if strings.HasPrefix(val, "htmx-post ") {
-		method = "post"
-		val = val[10:]
-	} else if strings.HasPrefix(val, "htmx-put ") {
-		method = "put"
-		val = val[9:]
-	} else if strings.HasPrefix(val, "htmx-delete ") {
-		method = "delete"
-		val = val[12:]
-	} else if strings.HasPrefix(val, "htmx-patch ") {
-		method = "patch"
-		val = val[11:]
-	} else if strings.HasPrefix(val, "htmx-get ") {
-		val = val[9:]
+func (parser *Parser) parseHXAttr(token Token) (Node, error) {
+	directiveValue := strings.TrimSpace(token.Value)
+	httpMethod := "get"
+	if strings.HasPrefix(directiveValue, "htmx-post ") {
+		httpMethod = "post"
+		directiveValue = directiveValue[10:]
+	} else if strings.HasPrefix(directiveValue, "htmx-put ") {
+		httpMethod = "put"
+		directiveValue = directiveValue[9:]
+	} else if strings.HasPrefix(directiveValue, "htmx-delete ") {
+		httpMethod = "delete"
+		directiveValue = directiveValue[12:]
+	} else if strings.HasPrefix(directiveValue, "htmx-patch ") {
+		httpMethod = "patch"
+		directiveValue = directiveValue[11:]
+	} else if strings.HasPrefix(directiveValue, "htmx-get ") {
+		directiveValue = directiveValue[9:]
 	}
 
-	val = strings.TrimSpace(val)
+	directiveValue = strings.TrimSpace(directiveValue)
 
-	var urlPath string
-	attrsStr := val
+	var targetURL string
+	attributesString := directiveValue
 
-	if len(val) > 0 && (val[0] == '\'' || val[0] == '"') {
-		quote := val[0]
-		end := strings.IndexByte(val[1:], quote)
-		if end != -1 {
-			urlPath = val[1 : 1+end]
-			attrsStr = strings.TrimSpace(val[1+end+1:])
+	if len(directiveValue) > 0 && (directiveValue[0] == '\'' || directiveValue[0] == '"') {
+		quoteChar := directiveValue[0]
+		quoteEndIndex := strings.IndexByte(directiveValue[1:], quoteChar)
+		if quoteEndIndex != -1 {
+			targetURL = directiveValue[1 : 1+quoteEndIndex]
+			attributesString = strings.TrimSpace(directiveValue[1+quoteEndIndex+1:])
 		}
 	} else {
-		parts := strings.Fields(val)
-		if len(parts) > 0 {
-			urlPath = parts[0]
-			if len(val) > len(urlPath) {
-				attrsStr = strings.TrimSpace(val[len(urlPath):])
+		valueParts := strings.Fields(directiveValue)
+		if len(valueParts) > 0 {
+			targetURL = valueParts[0]
+			if len(directiveValue) > len(targetURL) {
+				attributesString = strings.TrimSpace(directiveValue[len(targetURL):])
 			} else {
-				attrsStr = ""
+				attributesString = ""
 			}
 		}
 	}
 
-	attrs := parseKeyValuePairs(attrsStr)
+	attributesMap := parseKeyValuePairs(attributesString)
 	return &HXAttrNode{
-		Method:    method,
-		URL:       urlPath,
-		Target:    attrs["target"],
-		Swap:      attrs["swap"],
-		Indicator: attrs["indicator"],
-		Trigger:   attrs["trigger"],
+		Method:    httpMethod,
+		URL:       targetURL,
+		Target:    attributesMap["target"],
+		Swap:      attributesMap["swap"],
+		Indicator: attributesMap["indicator"],
+		Trigger:   attributesMap["trigger"],
 	}, nil
 }
 
-func (parserInstance *Parser) parseAlpine(token Token) (Node, error) {
+func (parser *Parser) parseAlpine(token Token) (Node, error) {
 	rawDirectiveValue := strings.TrimSpace(token.Value)
 	if strings.HasPrefix(rawDirectiveValue, "alpinejs") {
 		rawDirectiveValue = strings.TrimSpace(rawDirectiveValue[8:])
@@ -1443,7 +1442,7 @@ func (parserInstance *Parser) parseAlpine(token Token) (Node, error) {
 	}, nil
 }
 
-func (parserInstance *Parser) parseState(token Token) (Node, error) {
+func (parser *Parser) parseState(token Token) (Node, error) {
 	rawDirectiveValue := strings.TrimSpace(token.Value)
 	if strings.HasPrefix(rawDirectiveValue, "alpine-data") {
 		rawDirectiveValue = strings.TrimSpace(rawDirectiveValue[11:])
@@ -1468,7 +1467,7 @@ func (parserInstance *Parser) parseState(token Token) (Node, error) {
 	}, nil
 }
 
-func (parserInstance *Parser) parseAlpineAttr(token Token) (Node, error) {
+func (parser *Parser) parseAlpineAttr(token Token) (Node, error) {
 	rawDirectiveValue := strings.TrimSpace(token.Value)
 	partTokens := strings.SplitN(rawDirectiveValue, " ", 2)
 

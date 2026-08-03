@@ -6,35 +6,35 @@ type Context struct {
 }
 
 func NewContext(values map[string]any) *Context {
-	v := make(map[string]any)
+	initialValues := make(map[string]any)
 	if values != nil {
-		for k, val := range values {
-			v[k] = val
+		for key, val := range values {
+			initialValues[key] = val
 		}
 	}
 	return &Context{
-		values:      v,
+		values:      initialValues,
 		localValues: make(map[string]any),
 	}
 }
 
-func (c *Context) Get(name string) any {
-	if val, ok := c.localValues[name]; ok {
+func (context *Context) Get(name string) any {
+	if val, exists := context.localValues[name]; exists {
 		return val
 	}
-	return c.values[name]
+	return context.values[name]
 }
 
-func (c *Context) With(name string, value any) *Context {
-	nextValues := make(map[string]any, len(c.values)+1)
-	for k, v := range c.values {
-		nextValues[k] = v
+func (context *Context) With(name string, value any) *Context {
+	nextValues := make(map[string]any, len(context.values)+1)
+	for key, val := range context.values {
+		nextValues[key] = val
 	}
 	nextValues[name] = value
 
-	nextLocals := make(map[string]any, len(c.localValues))
-	for k, v := range c.localValues {
-		nextLocals[k] = v
+	nextLocals := make(map[string]any, len(context.localValues))
+	for key, val := range context.localValues {
+		nextLocals[key] = val
 	}
 
 	return &Context{
@@ -43,18 +43,18 @@ func (c *Context) With(name string, value any) *Context {
 	}
 }
 
-func (c *Context) WithAll(childValues map[string]any) *Context {
-	nextValues := make(map[string]any, len(c.values)+len(childValues))
-	for k, v := range c.values {
-		nextValues[k] = v
+func (context *Context) WithAll(childValues map[string]any) *Context {
+	nextValues := make(map[string]any, len(context.values)+len(childValues))
+	for key, val := range context.values {
+		nextValues[key] = val
 	}
-	for k, v := range childValues {
-		nextValues[k] = v
+	for key, val := range childValues {
+		nextValues[key] = val
 	}
 
-	nextLocals := make(map[string]any, len(c.localValues))
-	for k, v := range c.localValues {
-		nextLocals[k] = v
+	nextLocals := make(map[string]any, len(context.localValues))
+	for key, val := range context.localValues {
+		nextLocals[key] = val
 	}
 
 	return &Context{
@@ -63,10 +63,10 @@ func (c *Context) WithAll(childValues map[string]any) *Context {
 	}
 }
 
-func (c *Context) SubContext(childValues map[string]any) *Context {
-	return c.WithAll(childValues)
+func (context *Context) SubContext(childValues map[string]any) *Context {
+	return context.WithAll(childValues)
 }
 
-func (c *Context) PushLocal(name string, value any) {
-	c.localValues[name] = value
+func (context *Context) PushLocal(name string, value any) {
+	context.localValues[name] = value
 }

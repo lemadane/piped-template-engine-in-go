@@ -12,9 +12,9 @@ import (
 	"strings"
 )
 
-type PageDataLoader func(r *http.Request, params map[string]string) (map[string]any, error)
+type PageDataLoader func(request *http.Request, params map[string]string) (map[string]any, error)
 
-type AuthCheckHook func(r *http.Request, requiredRoles []string) (ok bool, status int, message string)
+type AuthCheckHook func(request *http.Request, requiredRoles []string) (isAuthorized bool, statusCode int, message string)
 
 type Route struct {
 	Path         string
@@ -50,30 +50,30 @@ func NewFileRouter(engine *Engine, routesDir string) (*FileRouter, error) {
 	return router, nil
 }
 
-func NewFileRouterFS(engine *Engine, fsys fs.FS, rootDir string) (*FileRouter, error) {
+func NewFileRouterFS(engine *Engine, filesystem fs.FS, rootDir string) (*FileRouter, error) {
 	router := &FileRouter{
 		engine:      engine,
 		routesDir:   rootDir,
 		dataLoaders: make(map[string]PageDataLoader),
 	}
 
-	var routes []Route
-	err := fs.WalkDir(fsys, rootDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	var discoveredRoutes []Route
+	err := fs.WalkDir(filesystem, rootDir, func(filePath string, dirEntry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
 
-		if d.IsDir() {
+		if dirEntry.IsDir() {
 			return nil
 		}
 
-		if d.Name() == "+page.pte" {
-			rel, err := filepath.Rel(rootDir, path)
-			if err != nil {
-				rel = path
+		if dirEntry.Name() == "+page.pte" {
+			relativePath, relErr := filepath.Rel(rootDir, filePath)
+			if relErr != nil {
+				relativePath = filePath
 			}
 
-			dirPart := filepath.Dir(rel)
+			dirPart := filepath.Dir(relativePath)
 			var routePath string
 			if dirPart == "." || dirPart == "" {
 				routePath = "/"
@@ -81,19 +81,19 @@ func NewFileRouterFS(engine *Engine, fsys fs.FS, rootDir string) (*FileRouter, e
 				routePath = "/" + filepath.ToSlash(dirPart)
 			}
 
-			data, err := fs.ReadFile(fsys, path)
-			if err != nil {
-				return err
+			templateData, readErr := fs.ReadFile(filesystem, filePath)
+			if readErr != nil {
+				return readErr
 			}
 
-			compiled, err := engine.Compile(string(data))
-			if err != nil {
-				return fmt.Errorf("failed to compile routing page %s: %w", path, err)
+			compiled, compileErr := engine.Compile(string(templateData))
+			if compileErr != nil {
+				return fmt.Errorf("failed to compile routing page %s: %w", filePath, compileErr)
 			}
 
-			routes = append(routes, Route{
+			discoveredRoutes = append(discoveredRoutes, Route{
 				Path:         routePath,
-				TemplatePath: path,
+				TemplatePath: filePath,
 				Compiled:     compiled,
 				Segments:     splitRoutePath(routePath),
 			})
@@ -105,41 +105,41 @@ func NewFileRouterFS(engine *Engine, fsys fs.FS, rootDir string) (*FileRouter, e
 		return nil, err
 	}
 
-	sort.Slice(routes, func(i, j int) bool {
-		return isMoreSpecificRoute(routes[i], routes[j])
+	sort.Slice(discoveredRoutes, func(firstIndex, secondIndex int) bool {
+		return isMoreSpecificRoute(discoveredRoutes[firstIndex], discoveredRoutes[secondIndex])
 	})
 
-	router.routes = routes
+	router.routes = discoveredRoutes
 	return router, nil
 }
 
-func (r *FileRouter) RegisterDataLoader(routePath string, loader PageDataLoader) {
-	r.dataLoaders[r.normalizePattern(routePath)] = loader
+func (router *FileRouter) RegisterDataLoader(routePath string, loader PageDataLoader) {
+	router.dataLoaders[router.normalizePattern(routePath)] = loader
 }
 
-func (r *FileRouter) discoverRoutes() error {
-	if _, err := os.Stat(r.routesDir); os.IsNotExist(err) {
+func (router *FileRouter) discoverRoutes() error {
+	if _, err := os.Stat(router.routesDir); os.IsNotExist(err) {
 		return nil // No routes directory, nothing to discover
 	}
 
-	var routes []Route
-	err := filepath.WalkDir(r.routesDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	var discoveredRoutes []Route
+	err := filepath.WalkDir(router.routesDir, func(filePath string, dirEntry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
 
-		if d.IsDir() {
+		if dirEntry.IsDir() {
 			return nil
 		}
 
-		if d.Name() == "+page.pte" {
-			rel, err := filepath.Rel(r.routesDir, path)
-			if err != nil {
-				return err
+		if dirEntry.Name() == "+page.pte" {
+			relativePath, relErr := filepath.Rel(router.routesDir, filePath)
+			if relErr != nil {
+				return relErr
 			}
 
 			// Convert relative path to URL path format
-			dirPart := filepath.Dir(rel)
+			dirPart := filepath.Dir(relativePath)
 			var routePath string
 			if dirPart == "." || dirPart == "" {
 				routePath = "/"
@@ -148,19 +148,19 @@ func (r *FileRouter) discoverRoutes() error {
 			}
 
 			// Compile template to parse AST and collect page metadata
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
+			templateData, readErr := os.ReadFile(filePath)
+			if readErr != nil {
+				return readErr
 			}
 
-			compiled, err := r.engine.Compile(string(data))
-			if err != nil {
-				return fmt.Errorf("failed to compile routing page %s: %w", path, err)
+			compiled, compileErr := router.engine.Compile(string(templateData))
+			if compileErr != nil {
+				return fmt.Errorf("failed to compile routing page %s: %w", filePath, compileErr)
 			}
 
-			routes = append(routes, Route{
+			discoveredRoutes = append(discoveredRoutes, Route{
 				Path:         routePath,
-				TemplatePath: path,
+				TemplatePath: filePath,
 				Compiled:     compiled,
 				Segments:     splitRoutePath(routePath),
 			})
@@ -173,257 +173,257 @@ func (r *FileRouter) discoverRoutes() error {
 	}
 
 	// Sort routes based on segment specificity (static routes priority over wildcards)
-	sort.Slice(routes, func(i, j int) bool {
-		return isMoreSpecificRoute(routes[i], routes[j])
+	sort.Slice(discoveredRoutes, func(firstIndex, secondIndex int) bool {
+		return isMoreSpecificRoute(discoveredRoutes[firstIndex], discoveredRoutes[secondIndex])
 	})
 
-	r.routes = routes
+	router.routes = discoveredRoutes
 	return nil
 }
 
-func isMoreSpecificRoute(r1, r2 Route) bool {
-	segsI := r1.Segments
-	segsJ := r2.Segments
+func isMoreSpecificRoute(firstRoute, secondRoute Route) bool {
+	firstSegments := firstRoute.Segments
+	secondSegments := secondRoute.Segments
 
-	limit := len(segsI)
-	if len(segsJ) < limit {
-		limit = len(segsJ)
+	segmentLimit := len(firstSegments)
+	if len(secondSegments) < segmentLimit {
+		segmentLimit = len(secondSegments)
 	}
 
-	for k := 0; k < limit; k++ {
-		isWildI := strings.HasPrefix(segsI[k], "[") && strings.HasSuffix(segsI[k], "]")
-		isWildJ := strings.HasPrefix(segsJ[k], "[") && strings.HasSuffix(segsJ[k], "]")
+	for segmentIndex := 0; segmentIndex < segmentLimit; segmentIndex++ {
+		isWildcardFirst := strings.HasPrefix(firstSegments[segmentIndex], "[") && strings.HasSuffix(firstSegments[segmentIndex], "]")
+		isWildcardSecond := strings.HasPrefix(secondSegments[segmentIndex], "[") && strings.HasSuffix(secondSegments[segmentIndex], "]")
 
-		if isWildI != isWildJ {
-			return !isWildI
+		if isWildcardFirst != isWildcardSecond {
+			return !isWildcardFirst
 		}
 	}
 
-	return len(segsI) > len(segsJ)
+	return len(firstSegments) > len(secondSegments)
 }
 
-func (r *FileRouter) Match(urlPath string) (*Route, map[string]string) {
-	cleaned := filepath.Clean(urlPath)
-	if cleaned == "" || cleaned == "." {
-		cleaned = "/"
+func (router *FileRouter) Match(urlPath string) (*Route, map[string]string) {
+	cleanedPath := filepath.Clean(urlPath)
+	if cleanedPath == "" || cleanedPath == "." {
+		cleanedPath = "/"
 	}
-	urlSegs := splitRoutePath(cleaned)
+	urlSegments := splitRoutePath(cleanedPath)
 
-	for _, route := range r.routes {
-		if len(route.Segments) != len(urlSegs) {
+	for _, route := range router.routes {
+		if len(route.Segments) != len(urlSegments) {
 			continue
 		}
 
-		params := make(map[string]string)
-		matched := true
-		for i, seg := range route.Segments {
-			if strings.HasPrefix(seg, "[") && strings.HasSuffix(seg, "]") {
-				paramName := seg[1 : len(seg)-1]
-				params[paramName] = urlSegs[i]
-			} else if seg != urlSegs[i] {
-				matched = false
+		routeParams := make(map[string]string)
+		isMatch := true
+		for segmentIndex, segment := range route.Segments {
+			if strings.HasPrefix(segment, "[") && strings.HasSuffix(segment, "]") {
+				paramName := segment[1 : len(segment)-1]
+				routeParams[paramName] = urlSegments[segmentIndex]
+			} else if segment != urlSegments[segmentIndex] {
+				isMatch = false
 				break
 			}
 		}
 
-		if matched {
-			return &route, params
+		if isMatch {
+			return &route, routeParams
 		}
 	}
 	return nil, nil
 }
 
-func (r *FileRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	route, params := r.Match(req.URL.Path)
+func (router *FileRouter) ServeHTTP(responseWriter http.ResponseWriter, request *http.Request) {
+	route, routeParams := router.Match(request.URL.Path)
 	if route == nil {
-		http.NotFound(w, req)
+		http.NotFound(responseWriter, request)
 		return
 	}
 
 	metadata := route.Compiled.Metadata
 
 	// Enforce metadata auth and roles checks
-	if authVal, ok := metadata["auth"]; ok {
+	if authVal, isFound := metadata["auth"]; isFound {
 		requiredAuth := false
-		if b, ok := authVal.(bool); ok {
-			requiredAuth = b
+		if booleanVal, isBool := authVal.(bool); isBool {
+			requiredAuth = booleanVal
 		}
 		if requiredAuth {
 			var requiredRoles []string
-			if rolesVal, ok := metadata["roles"]; ok {
-				if rList, ok := rolesVal.([]string); ok {
-					requiredRoles = rList
-				} else if rStr, ok := rolesVal.(string); ok {
-					requiredRoles = []string{rStr}
+			if rolesVal, isFoundRoles := metadata["roles"]; isFoundRoles {
+				if roleList, isList := rolesVal.([]string); isList {
+					requiredRoles = roleList
+				} else if roleString, isString := rolesVal.(string); isString {
+					requiredRoles = []string{roleString}
 				}
 			}
 
-			if r.AuthCheck != nil {
-				ok, status, msg := r.AuthCheck(req, requiredRoles)
-				if !ok {
-					if status == 0 {
-						status = http.StatusUnauthorized
+			if router.AuthCheck != nil {
+				isAuthorized, statusCode, message := router.AuthCheck(request, requiredRoles)
+				if !isAuthorized {
+					if statusCode == 0 {
+						statusCode = http.StatusUnauthorized
 					}
-					if msg == "" {
-						msg = http.StatusText(status)
+					if message == "" {
+						message = http.StatusText(statusCode)
 					}
-					http.Error(w, msg, status)
+					http.Error(responseWriter, message, statusCode)
 					return
 				}
 			} else {
 				// No AuthCheck hook registered, deny by default as secure practice
-				http.Error(w, "Unauthorized (No AuthCheck Hook Registered)", http.StatusUnauthorized)
+				http.Error(responseWriter, "Unauthorized (No AuthCheck Hook Registered)", http.StatusUnauthorized)
 				return
 			}
 		}
 	}
 
-	model := make(map[string]any)
-	for k, v := range params {
-		model[k] = v
+	dataModel := make(map[string]any)
+	for key, value := range routeParams {
+		dataModel[key] = value
 	}
 
 	// Propagate query params
-	for k, vals := range req.URL.Query() {
-		if len(vals) > 0 {
-			if len(vals) == 1 {
-				model[k] = vals[0]
+	for key, queryValues := range request.URL.Query() {
+		if len(queryValues) > 0 {
+			if len(queryValues) == 1 {
+				dataModel[key] = queryValues[0]
 			} else {
-				model[k] = vals
+				dataModel[key] = queryValues
 			}
 		}
 	}
 
 	// Call Loader if registered
-	if loader, ok := r.dataLoaders[route.Path]; ok {
-		loadedData, err := loader(req, params)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	if dataLoader, isFoundLoader := router.dataLoaders[route.Path]; isFoundLoader {
+		loadedData, loaderErr := dataLoader(request, routeParams)
+		if loaderErr != nil {
+			http.Error(responseWriter, loaderErr.Error(), http.StatusInternalServerError)
 			return
 		}
-		for k, v := range loadedData {
-			model[k] = v
+		for key, value := range loadedData {
+			dataModel[key] = value
 		}
 	}
 
 	// Inject standard request PageContext
-	if _, exists := model["page"]; !exists {
-		hdrMap := make(map[string]string)
-		for k, vals := range req.Header {
-			if len(vals) > 0 {
-				hdrMap[k] = vals[0]
+	if _, exists := dataModel["page"]; !exists {
+		headerMap := make(map[string]string)
+		for key, headerValues := range request.Header {
+			if len(headerValues) > 0 {
+				headerMap[key] = headerValues[0]
 			}
 		}
 
 		cookieMap := make(map[string]string)
-		for _, cookie := range req.Cookies() {
+		for _, cookie := range request.Cookies() {
 			cookieMap[cookie.Name] = cookie.Value
 		}
 
 		paramMap := make(map[string]any)
-		for k, v := range params {
-			paramMap[k] = v
+		for key, value := range routeParams {
+			paramMap[key] = value
 		}
-		for k, vals := range req.URL.Query() {
-			if len(vals) > 0 {
-				if len(vals) == 1 {
-					paramMap[k] = vals[0]
+		for key, queryValues := range request.URL.Query() {
+			if len(queryValues) > 0 {
+				if len(queryValues) == 1 {
+					paramMap[key] = queryValues[0]
 				} else {
-					paramMap[k] = vals
+					paramMap[key] = queryValues
 				}
 			}
 		}
 
-		isHTMX := req.Header.Get("HX-Request") == "true"
-		model["page"] = &PageContext{
-			RequestURI:   req.URL.Path,
-			QueryString:  req.URL.RawQuery,
-			Method:       req.Method,
-			Headers:      hdrMap,
+		isHTMX := request.Header.Get("HX-Request") == "true"
+		dataModel["page"] = &PageContext{
+			RequestURI:   request.URL.Path,
+			QueryString:  request.URL.RawQuery,
+			Method:       request.Method,
+			Headers:      headerMap,
 			Params:       paramMap,
 			Cookies:      cookieMap,
 			IsHTMX:       isHTMX,
-			HXTarget:     req.Header.Get("HX-Target"),
-			HXTrigger:    req.Header.Get("HX-Trigger"),
-			HXCurrentURL: req.Header.Get("HX-Current-URL"),
+			HXTarget:     request.Header.Get("HX-Target"),
+			HXTrigger:    request.Header.Get("HX-Trigger"),
+			HXCurrentURL: request.Header.Get("HX-Current-URL"),
 		}
 	}
 
 	// Set title from metadata if not present in model
-	if title, ok := metadata["title"]; ok {
-		if _, exists := model["title"]; !exists {
-			model["title"] = title
+	if titleValue, isFoundTitle := metadata["title"]; isFoundTitle {
+		if _, exists := dataModel["title"]; !exists {
+			dataModel["title"] = titleValue
 		}
 	}
 
 	// Apply custom headers from metadata
-	if cache, ok := metadata["cache"]; ok {
-		w.Header().Set("Cache-Control", fmt.Sprintf("%v", cache))
+	if cacheValue, isFoundCache := metadata["cache"]; isFoundCache {
+		responseWriter.Header().Set("Cache-Control", fmt.Sprintf("%v", cacheValue))
 	}
 
 	contentType := "text/html; charset=utf-8"
-	if ct, ok := metadata["contentType"]; ok {
-		contentType = fmt.Sprintf("%v", ct)
+	if ctValue, isFoundContentType := metadata["contentType"]; isFoundContentType {
+		contentType = fmt.Sprintf("%v", ctValue)
 	}
-	w.Header().Set("Content-Type", contentType)
+	responseWriter.Header().Set("Content-Type", contentType)
 
 	// Apply HTMX metadata response headers
-	if hxTrig, ok := metadata["hxTrigger"]; ok {
-		w.Header().Set("HX-Trigger", fmt.Sprintf("%v", hxTrig))
+	if hxTriggerVal, isFoundTrigger := metadata["hxTrigger"]; isFoundTrigger {
+		responseWriter.Header().Set("HX-Trigger", fmt.Sprintf("%v", hxTriggerVal))
 	}
-	if hxRedir, ok := metadata["hxRedirect"]; ok {
-		w.Header().Set("HX-Redirect", fmt.Sprintf("%v", hxRedir))
+	if hxRedirectVal, isFoundRedirect := metadata["hxRedirect"]; isFoundRedirect {
+		responseWriter.Header().Set("HX-Redirect", fmt.Sprintf("%v", hxRedirectVal))
 	}
-	if hxPush, ok := metadata["hxPushUrl"]; ok {
-		w.Header().Set("HX-Push-Url", fmt.Sprintf("%v", hxPush))
+	if hxPushUrlVal, isFoundPush := metadata["hxPushUrl"]; isFoundPush {
+		responseWriter.Header().Set("HX-Push-Url", fmt.Sprintf("%v", hxPushUrlVal))
 	}
-	if hxRef, ok := metadata["hxRefresh"]; ok {
-		if b, ok := hxRef.(bool); ok && b {
-			w.Header().Set("HX-Refresh", "true")
+	if hxRefreshVal, isFoundRefresh := metadata["hxRefresh"]; isFoundRefresh {
+		if booleanRefresh, isBool := hxRefreshVal.(bool); isBool && booleanRefresh {
+			responseWriter.Header().Set("HX-Refresh", "true")
 		} else {
-			w.Header().Set("HX-Refresh", fmt.Sprintf("%v", hxRef))
+			responseWriter.Header().Set("HX-Refresh", fmt.Sprintf("%v", hxRefreshVal))
 		}
 	}
 
 	// Render the template to a buffer before writing headers or body
-	ctx := NewContext(model)
-	ctx.PushLocal("_engine", r.engine)
+	context := NewContext(dataModel)
+	context.PushLocal("_engine", router.engine)
 
-	var buf bytes.Buffer
-	renderErr := route.Compiled.RootNode.Render(ctx, &buf)
+	var buffer bytes.Buffer
+	renderErr := route.Compiled.RootNode.Render(context, &buffer)
 	if renderErr != nil {
-		http.Error(w, renderErr.Error(), http.StatusInternalServerError)
+		http.Error(responseWriter, renderErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	result := buf.String()
-	if r.engine.minify {
-		result = MinifyHTML(result)
-	} else if r.engine.prettify {
-		result = PrettifyHTML(result)
+	renderedResult := buffer.String()
+	if router.engine.minify {
+		renderedResult = MinifyHTML(renderedResult)
+	} else if router.engine.prettify {
+		renderedResult = PrettifyHTML(renderedResult)
 	}
 
-	_, _ = io.WriteString(w, result)
+	_, _ = io.WriteString(responseWriter, renderedResult)
 }
 
-func (r *FileRouter) normalizePattern(p string) string {
-	p = strings.TrimSpace(p)
-	p = strings.ReplaceAll(p, "\\", "/")
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
+func (router *FileRouter) normalizePattern(pattern string) string {
+	pattern = strings.TrimSpace(pattern)
+	pattern = strings.ReplaceAll(pattern, "\\", "/")
+	if !strings.HasPrefix(pattern, "/") {
+		pattern = "/" + pattern
 	}
-	if p != "/" {
-		p = strings.TrimSuffix(p, "/")
+	if pattern != "/" {
+		pattern = strings.TrimSuffix(pattern, "/")
 	}
-	return p
+	return pattern
 }
 
-func splitRoutePath(p string) []string {
-	p = strings.Trim(p, "/")
-	if p == "" {
+func splitRoutePath(path string) []string {
+	path = strings.Trim(path, "/")
+	if path == "" {
 		return []string{}
 	}
-	return strings.Split(p, "/")
+	return strings.Split(path, "/")
 }
 
 type PageContext struct {

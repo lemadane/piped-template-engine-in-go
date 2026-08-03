@@ -16,23 +16,23 @@ func NewEvaluator() *Evaluator {
 	return &Evaluator{}
 }
 
-func (e *Evaluator) Evaluate(expression string, context *Context) (any, error) {
+func (evaluator *Evaluator) Evaluate(expression string, context *Context) (any, error) {
 	trimmedExpression := strings.TrimSpace(expression)
 	if trimmedExpression == "" {
 		return nil, nil
 	}
-	return e.evaluateValue(trimmedExpression, context)
+	return evaluator.evaluateValue(trimmedExpression, context)
 }
 
-func (e *Evaluator) EvaluateBoolean(expression string, context *Context) (bool, error) {
-	val, err := e.evaluateCondition(strings.TrimSpace(expression), context)
+func (evaluator *Evaluator) EvaluateBoolean(expression string, context *Context) (bool, error) {
+	evaluatedVal, err := evaluator.evaluateCondition(strings.TrimSpace(expression), context)
 	if err != nil {
 		return false, err
 	}
-	return e.toBoolean(val), nil
+	return evaluator.toBoolean(evaluatedVal), nil
 }
 
-func (e *Evaluator) ValuesEqual(left, right any) bool {
+func (evaluator *Evaluator) ValuesEqual(left, right any) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
@@ -46,112 +46,112 @@ func (e *Evaluator) ValuesEqual(left, right any) bool {
 	return reflect.DeepEqual(left, right)
 }
 
-func (e *Evaluator) evaluateCondition(expression string, context *Context) (any, error) {
+func (evaluator *Evaluator) evaluateCondition(expression string, context *Context) (any, error) {
 	trimmedExpression := strings.TrimSpace(expression)
 
-	if idx := e.findWordOperator(trimmedExpression, "nor"); idx != -1 {
-		left := trimmedExpression[:idx]
-		right := trimmedExpression[idx+len("nor"):]
-		leftBool, err := e.EvaluateBoolean(left, context)
+	if operatorIndex := evaluator.findWordOperator(trimmedExpression, "nor"); operatorIndex != -1 {
+		leftExpr := trimmedExpression[:operatorIndex]
+		rightExpr := trimmedExpression[operatorIndex+len("nor"):]
+		leftBool, err := evaluator.EvaluateBoolean(leftExpr, context)
 		if err != nil {
 			return nil, err
 		}
-		rightBool, err := e.EvaluateBoolean(right, context)
+		rightBool, err := evaluator.EvaluateBoolean(rightExpr, context)
 		if err != nil {
 			return nil, err
 		}
 		return !(leftBool || rightBool), nil
 	}
 
-	if idx := e.findWordOperator(trimmedExpression, "or"); idx != -1 {
-		left := trimmedExpression[:idx]
-		right := trimmedExpression[idx+len("or"):]
-		leftBool, err := e.EvaluateBoolean(left, context)
+	if operatorIndex := evaluator.findWordOperator(trimmedExpression, "or"); operatorIndex != -1 {
+		leftExpr := trimmedExpression[:operatorIndex]
+		rightExpr := trimmedExpression[operatorIndex+len("or"):]
+		leftBool, err := evaluator.EvaluateBoolean(leftExpr, context)
 		if err != nil {
 			return nil, err
 		}
-		rightBool, err := e.EvaluateBoolean(right, context)
+		rightBool, err := evaluator.EvaluateBoolean(rightExpr, context)
 		if err != nil {
 			return nil, err
 		}
 		return leftBool || rightBool, nil
 	}
 
-	if idx := e.findWordOperator(trimmedExpression, "nand"); idx != -1 {
-		left := trimmedExpression[:idx]
-		right := trimmedExpression[idx+len("nand"):]
-		leftBool, err := e.EvaluateBoolean(left, context)
+	if operatorIndex := evaluator.findWordOperator(trimmedExpression, "nand"); operatorIndex != -1 {
+		leftExpr := trimmedExpression[:operatorIndex]
+		rightExpr := trimmedExpression[operatorIndex+len("nand"):]
+		leftBool, err := evaluator.EvaluateBoolean(leftExpr, context)
 		if err != nil {
 			return nil, err
 		}
-		rightBool, err := e.EvaluateBoolean(right, context)
+		rightBool, err := evaluator.EvaluateBoolean(rightExpr, context)
 		if err != nil {
 			return nil, err
 		}
 		return !(leftBool && rightBool), nil
 	}
 
-	if idx := e.findWordOperator(trimmedExpression, "and"); idx != -1 {
-		left := trimmedExpression[:idx]
-		right := trimmedExpression[idx+len("and"):]
-		leftBool, err := e.EvaluateBoolean(left, context)
+	if operatorIndex := evaluator.findWordOperator(trimmedExpression, "and"); operatorIndex != -1 {
+		leftExpr := trimmedExpression[:operatorIndex]
+		rightExpr := trimmedExpression[operatorIndex+len("and"):]
+		leftBool, err := evaluator.EvaluateBoolean(leftExpr, context)
 		if err != nil {
 			return nil, err
 		}
-		rightBool, err := e.EvaluateBoolean(right, context)
+		rightBool, err := evaluator.EvaluateBoolean(rightExpr, context)
 		if err != nil {
 			return nil, err
 		}
 		return leftBool && rightBool, nil
 	}
 
-	if e.startsWithWord(trimmedExpression, "not") {
+	if evaluator.startsWithWord(trimmedExpression, "not") {
 		valueExpr := strings.TrimSpace(trimmedExpression[len("not"):])
-		valBool, err := e.EvaluateBoolean(valueExpr, context)
+		valBool, err := evaluator.EvaluateBoolean(valueExpr, context)
 		if err != nil {
 			return nil, err
 		}
 		return !valBool, nil
 	}
 
-	if comp := e.findComparison(trimmedExpression); comp != nil {
-		leftVal, err := e.evaluateValue(comp.left, context)
+	if comparisonDesc := evaluator.findComparison(trimmedExpression); comparisonDesc != nil {
+		leftVal, err := evaluator.evaluateValue(comparisonDesc.left, context)
 		if err != nil {
 			return nil, err
 		}
-		rightVal, err := e.evaluateValue(comp.right, context)
+		rightVal, err := evaluator.evaluateValue(comparisonDesc.right, context)
 		if err != nil {
 			return nil, err
 		}
-		return e.compare(leftVal, rightVal, comp.operator)
+		return evaluator.compare(leftVal, rightVal, comparisonDesc.operator)
 	}
 
-	return e.evaluateValue(trimmedExpression, context)
+	return evaluator.evaluateValue(trimmedExpression, context)
 }
 
-func (e *Evaluator) evaluateValue(expression string, context *Context) (any, error) {
-	trimmedExpression := e.removeWrappingParentheses(strings.TrimSpace(expression))
+func (evaluator *Evaluator) evaluateValue(expression string, context *Context) (any, error) {
+	trimmedExpression := evaluator.removeWrappingParentheses(strings.TrimSpace(expression))
 	if trimmedExpression == "" {
 		return nil, nil
 	}
 
-	if filtered := e.parseFilteredExpression(trimmedExpression); filtered != nil {
-		return e.evaluateFilteredExpression(filtered, context)
+	if filteredDesc := evaluator.parseFilteredExpression(trimmedExpression); filteredDesc != nil {
+		return evaluator.evaluateFilteredExpression(filteredDesc, context)
 	}
 
-	if arith := e.findBinaryArithmetic(trimmedExpression); arith != nil {
-		leftVal, err := e.evaluateValue(arith.left, context)
+	if arithDesc := evaluator.findBinaryArithmetic(trimmedExpression); arithDesc != nil {
+		leftVal, err := evaluator.evaluateValue(arithDesc.left, context)
 		if err != nil {
 			return nil, err
 		}
-		rightVal, err := e.evaluateValue(arith.right, context)
+		rightVal, err := evaluator.evaluateValue(arithDesc.right, context)
 		if err != nil {
 			return nil, err
 		}
 		leftNum, isLeftNum := toFloat64(leftVal)
 		rightNum, isRightNum := toFloat64(rightVal)
 		if isLeftNum && isRightNum {
-			switch arith.operator {
+			switch arithDesc.operator {
 			case "+":
 				return leftNum + rightNum, nil
 			case "-":
@@ -169,31 +169,31 @@ func (e *Evaluator) evaluateValue(expression string, context *Context) (any, err
 		}
 	}
 
-	if ternary := e.findTernaryExpression(trimmedExpression); ternary != nil {
-		condBool, err := e.EvaluateBoolean(ternary.condition, context)
+	if ternaryDesc := evaluator.findTernaryExpression(trimmedExpression); ternaryDesc != nil {
+		condBool, err := evaluator.EvaluateBoolean(ternaryDesc.condition, context)
 		if err != nil {
 			return nil, err
 		}
 		if condBool {
-			return e.evaluateValue(ternary.trueExpression, context)
+			return evaluator.evaluateValue(ternaryDesc.trueExpression, context)
 		}
-		return e.evaluateValue(ternary.falseExpression, context)
+		return evaluator.evaluateValue(ternaryDesc.falseExpression, context)
 	}
 
-	if idx := e.findNullCoalescingOperator(trimmedExpression); idx != -1 {
-		leftExpr := strings.TrimSpace(trimmedExpression[:idx])
-		rightExpr := strings.TrimSpace(trimmedExpression[idx+2:])
-		leftVal, err := e.evaluateValue(leftExpr, context)
+	if operatorIndex := evaluator.findNullCoalescingOperator(trimmedExpression); operatorIndex != -1 {
+		leftExpr := strings.TrimSpace(trimmedExpression[:operatorIndex])
+		rightExpr := strings.TrimSpace(trimmedExpression[operatorIndex+2:])
+		leftVal, err := evaluator.evaluateValue(leftExpr, context)
 		if err != nil {
 			return nil, err
 		}
 		if leftVal != nil {
 			return leftVal, nil
 		}
-		return e.evaluateValue(rightExpr, context)
+		return evaluator.evaluateValue(rightExpr, context)
 	}
 
-	if e.isQuotedString(trimmedExpression) {
+	if evaluator.isQuotedString(trimmedExpression) {
 		return trimmedExpression[1 : len(trimmedExpression)-1], nil
 	}
 
@@ -209,18 +209,18 @@ func (e *Evaluator) evaluateValue(expression string, context *Context) (any, err
 		return nil, nil
 	}
 
-	if e.isNumber(trimmedExpression) {
-		val, err := strconv.ParseFloat(trimmedExpression, 64)
+	if evaluator.isNumber(trimmedExpression) {
+		parsedFloat, err := strconv.ParseFloat(trimmedExpression, 64)
 		if err != nil {
 			return nil, err
 		}
-		return val, nil
+		return parsedFloat, nil
 	}
 
-	return e.readPath(trimmedExpression, context)
+	return evaluator.readPath(trimmedExpression, context)
 }
 
-func (e *Evaluator) compare(left, right any, operator string) (bool, error) {
+func (evaluator *Evaluator) compare(left, right any, operator string) (bool, error) {
 	leftNum, isLeftNum := toFloat64(left)
 	rightNum, isRightNum := toFloat64(right)
 
@@ -271,68 +271,68 @@ func (e *Evaluator) compare(left, right any, operator string) (bool, error) {
 	}
 }
 
-func (e *Evaluator) toBoolean(value any) bool {
+func (evaluator *Evaluator) toBoolean(value any) bool {
 	if value == nil {
 		return false
 	}
 
-	val := reflect.ValueOf(value)
-	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
-		if val.IsNil() {
+	reflectVal := reflect.ValueOf(value)
+	for reflectVal.Kind() == reflect.Ptr || reflectVal.Kind() == reflect.Interface {
+		if reflectVal.IsNil() {
 			return false
 		}
-		val = val.Elem()
+		reflectVal = reflectVal.Elem()
 	}
 
-	switch val.Kind() {
+	switch reflectVal.Kind() {
 	case reflect.Bool:
-		return val.Bool()
+		return reflectVal.Bool()
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return val.Int() != 0
+		return reflectVal.Int() != 0
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return val.Uint() != 0
+		return reflectVal.Uint() != 0
 	case reflect.Float32, reflect.Float64:
-		return val.Float() != 0.0
+		return reflectVal.Float() != 0.0
 	case reflect.String:
-		return strings.TrimSpace(val.String()) != ""
+		return strings.TrimSpace(reflectVal.String()) != ""
 	case reflect.Slice, reflect.Array:
-		return val.Len() > 0
+		return reflectVal.Len() > 0
 	case reflect.Map:
-		return val.Len() > 0
+		return reflectVal.Len() > 0
 	}
 
 	return true
 }
 
-func (e *Evaluator) isQuotedString(value string) bool {
+func (evaluator *Evaluator) isQuotedString(value string) bool {
 	return len(value) >= 2 && (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") ||
 		strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'"))
 }
 
 var numberRegex = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
 
-func (e *Evaluator) isNumber(value string) bool {
+func (evaluator *Evaluator) isNumber(value string) bool {
 	return numberRegex.MatchString(value)
 }
 
-func (e *Evaluator) startsWithWord(expression, word string) bool {
+func (evaluator *Evaluator) startsWithWord(expression, word string) bool {
 	return expression == word || strings.HasPrefix(expression, word+" ")
 }
 
-func (e *Evaluator) findWordOperator(expression, operator string) int {
+func (evaluator *Evaluator) findWordOperator(expression, operator string) int {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 
-	opLen := len(operator)
-	for index := 0; index <= len(expression)-opLen; index++ {
-		current := expression[index]
+	operatorLength := len(operator)
+	for index := 0; index <= len(expression)-operatorLength; index++ {
+		character := expression[index]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -340,11 +340,11 @@ func (e *Evaluator) findWordOperator(expression, operator string) int {
 			continue
 		}
 
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
@@ -354,7 +354,7 @@ func (e *Evaluator) findWordOperator(expression, operator string) int {
 
 		if strings.HasPrefix(expression[index:], operator) {
 			beforeIsBoundary := index == 0 || isWhitespaceChar(expression[index-1])
-			afterIndex := index + opLen
+			afterIndex := index + operatorLength
 			afterIsBoundary := afterIndex >= len(expression) || isWhitespaceChar(expression[afterIndex])
 
 			if beforeIsBoundary && afterIsBoundary {
@@ -371,21 +371,21 @@ type comparisonDesc struct {
 	right    string
 }
 
-func (e *Evaluator) findComparison(expression string) *comparisonDesc {
-	operators := []string{"==", "!=", ">=", "<=", ">", "<"}
+func (evaluator *Evaluator) findComparison(expression string) *comparisonDesc {
+	operatorsList := []string{"==", "!=", ">=", "<=", ">", "<"}
 
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 
 	for index := 0; index < len(expression); index++ {
-		current := expression[index]
+		character := expression[index]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -393,11 +393,11 @@ func (e *Evaluator) findComparison(expression string) *comparisonDesc {
 			continue
 		}
 
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
@@ -405,7 +405,7 @@ func (e *Evaluator) findComparison(expression string) *comparisonDesc {
 			continue
 		}
 
-		for _, op := range operators {
+		for _, op := range operatorsList {
 			if strings.HasPrefix(expression[index:], op) {
 				return &comparisonDesc{
 					left:     strings.TrimSpace(expression[:index]),
@@ -418,27 +418,27 @@ func (e *Evaluator) findComparison(expression string) *comparisonDesc {
 	return nil
 }
 
-func (e *Evaluator) removeWrappingParentheses(expression string) string {
+func (evaluator *Evaluator) removeWrappingParentheses(expression string) string {
 	result := expression
-	for strings.HasPrefix(result, "(") && strings.HasSuffix(result, ")") && e.wrapsWholeExpression(result) {
+	for strings.HasPrefix(result, "(") && strings.HasSuffix(result, ")") && evaluator.wrapsWholeExpression(result) {
 		result = strings.TrimSpace(result[1 : len(result)-1])
 	}
 	return result
 }
 
-func (e *Evaluator) wrapsWholeExpression(expression string) bool {
+func (evaluator *Evaluator) wrapsWholeExpression(expression string) bool {
 	depth := 0
 	insideSingleQuote := false
 	insideDoubleQuote := false
 
 	for index := 0; index < len(expression); index++ {
-		current := expression[index]
+		character := expression[index]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -446,10 +446,10 @@ func (e *Evaluator) wrapsWholeExpression(expression string) bool {
 			continue
 		}
 
-		if current == '(' {
+		if character == '(' {
 			depth++
 		}
-		if current == ')' {
+		if character == ')' {
 			depth--
 		}
 
@@ -466,20 +466,20 @@ type ternaryDesc struct {
 	falseExpression string
 }
 
-func (e *Evaluator) findTernaryExpression(expression string) *ternaryDesc {
+func (evaluator *Evaluator) findTernaryExpression(expression string) *ternaryDesc {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 	questionIndex := -1
 
 	for index := 0; index < len(expression); index++ {
-		current := expression[index]
+		character := expression[index]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -487,11 +487,11 @@ func (e *Evaluator) findTernaryExpression(expression string) *ternaryDesc {
 			continue
 		}
 
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
@@ -499,14 +499,14 @@ func (e *Evaluator) findTernaryExpression(expression string) *ternaryDesc {
 			continue
 		}
 
-		if current != '?' {
+		if character != '?' {
 			continue
 		}
 
-		if e.isOptionalChainingQuestionMark(expression, index) {
+		if evaluator.isOptionalChainingQuestionMark(expression, index) {
 			continue
 		}
-		if e.isNullCoalescingQuestionMark(expression, index) {
+		if evaluator.isNullCoalescingQuestionMark(expression, index) {
 			continue
 		}
 
@@ -518,7 +518,7 @@ func (e *Evaluator) findTernaryExpression(expression string) *ternaryDesc {
 		return nil
 	}
 
-	colonIndex := e.findTernaryColon(expression, questionIndex+1)
+	colonIndex := evaluator.findTernaryColon(expression, questionIndex+1)
 	if colonIndex == -1 {
 		return nil // Invalid or incomplete
 	}
@@ -530,20 +530,20 @@ func (e *Evaluator) findTernaryExpression(expression string) *ternaryDesc {
 	}
 }
 
-func (e *Evaluator) findTernaryColon(expression string, startIndex int) int {
+func (evaluator *Evaluator) findTernaryColon(expression string, startIndex int) int {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 	nestedTernaryDepth := 0
 
 	for index := startIndex; index < len(expression); index++ {
-		current := expression[index]
+		character := expression[index]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideDoubleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -551,11 +551,11 @@ func (e *Evaluator) findTernaryColon(expression string, startIndex int) int {
 			continue
 		}
 
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
@@ -563,18 +563,18 @@ func (e *Evaluator) findTernaryColon(expression string, startIndex int) int {
 			continue
 		}
 
-		if current == '?' {
-			if e.isOptionalChainingQuestionMark(expression, index) {
+		if character == '?' {
+			if evaluator.isOptionalChainingQuestionMark(expression, index) {
 				continue
 			}
-			if e.isNullCoalescingQuestionMark(expression, index) {
+			if evaluator.isNullCoalescingQuestionMark(expression, index) {
 				continue
 			}
 			nestedTernaryDepth++
 			continue
 		}
 
-		if current == ':' {
+		if character == ':' {
 			if nestedTernaryDepth == 0 {
 				return index
 			}
@@ -584,29 +584,29 @@ func (e *Evaluator) findTernaryColon(expression string, startIndex int) int {
 	return -1
 }
 
-func (e *Evaluator) isOptionalChainingQuestionMark(expression string, index int) bool {
+func (evaluator *Evaluator) isOptionalChainingQuestionMark(expression string, index int) bool {
 	return index+1 < len(expression) && expression[index+1] == '.'
 }
 
-func (e *Evaluator) isNullCoalescingQuestionMark(expression string, index int) bool {
+func (evaluator *Evaluator) isNullCoalescingQuestionMark(expression string, index int) bool {
 	previousIsQuestionMark := index > 0 && expression[index-1] == '?'
 	nextIsQuestionMark := index+1 < len(expression) && expression[index+1] == '?'
 	return previousIsQuestionMark || nextIsQuestionMark
 }
 
-func (e *Evaluator) findNullCoalescingOperator(expression string) int {
+func (evaluator *Evaluator) findNullCoalescingOperator(expression string) int {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 
 	for index := 0; index < len(expression)-1; index++ {
-		current := expression[index]
+		character := expression[index]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -614,11 +614,11 @@ func (e *Evaluator) findNullCoalescingOperator(expression string) int {
 			continue
 		}
 
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth++
 			continue
 		}
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth--
 			continue
 		}
@@ -635,8 +635,8 @@ type filteredExpressionDesc struct {
 	filters         []string
 }
 
-func (e *Evaluator) parseFilteredExpression(expression string) *filteredExpressionDesc {
-	parts := e.splitByTopLevelComma(expression)
+func (evaluator *Evaluator) parseFilteredExpression(expression string) *filteredExpressionDesc {
+	parts := evaluator.splitByTopLevelComma(expression)
 	if len(parts) <= 1 {
 		return nil
 	}
@@ -646,7 +646,7 @@ func (e *Evaluator) parseFilteredExpression(expression string) *filteredExpressi
 	}
 }
 
-func (e *Evaluator) splitByTopLevelComma(expression string) []string {
+func (evaluator *Evaluator) splitByTopLevelComma(expression string) []string {
 	var parts []string
 	var currentPart strings.Builder
 
@@ -657,59 +657,59 @@ func (e *Evaluator) splitByTopLevelComma(expression string) []string {
 	braceDepth := 0
 
 	for index := 0; index < len(expression); index++ {
-		current := expression[index]
+		character := expression[index]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
-			currentPart.WriteByte(current)
+			currentPart.WriteByte(character)
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
-			currentPart.WriteByte(current)
+			currentPart.WriteByte(character)
 			continue
 		}
 
 		if !insideSingleQuote && !insideDoubleQuote {
-			if current == '(' {
+			if character == '(' {
 				parenthesisDepth++
-				currentPart.WriteByte(current)
+				currentPart.WriteByte(character)
 				continue
 			}
-			if current == ')' {
+			if character == ')' {
 				parenthesisDepth--
-				currentPart.WriteByte(current)
+				currentPart.WriteByte(character)
 				continue
 			}
-			if current == '[' {
+			if character == '[' {
 				bracketDepth++
-				currentPart.WriteByte(current)
+				currentPart.WriteByte(character)
 				continue
 			}
-			if current == ']' {
+			if character == ']' {
 				bracketDepth--
-				currentPart.WriteByte(current)
+				currentPart.WriteByte(character)
 				continue
 			}
-			if current == '{' {
+			if character == '{' {
 				braceDepth++
-				currentPart.WriteByte(current)
+				currentPart.WriteByte(character)
 				continue
 			}
-			if current == '}' {
+			if character == '}' {
 				braceDepth--
-				currentPart.WriteByte(current)
+				currentPart.WriteByte(character)
 				continue
 			}
 
-			if parenthesisDepth == 0 && bracketDepth == 0 && braceDepth == 0 && current == ',' {
+			if parenthesisDepth == 0 && bracketDepth == 0 && braceDepth == 0 && character == ',' {
 				part := strings.TrimSpace(currentPart.String())
 				parts = append(parts, part)
 				currentPart.Reset()
 				continue
 			}
 		}
-		currentPart.WriteByte(current)
+		currentPart.WriteByte(character)
 	}
 
 	lastPart := strings.TrimSpace(currentPart.String())
@@ -717,19 +717,19 @@ func (e *Evaluator) splitByTopLevelComma(expression string) []string {
 	return parts
 }
 
-func (e *Evaluator) evaluateFilteredExpression(filtered *filteredExpressionDesc, context *Context) (any, error) {
-	val, err := e.evaluateValue(filtered.valueExpression, context)
+func (evaluator *Evaluator) evaluateFilteredExpression(filtered *filteredExpressionDesc, context *Context) (any, error) {
+	evaluatedVal, err := evaluator.evaluateValue(filtered.valueExpression, context)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, filterSource := range filtered.filters {
-		val, err = e.applyFilter(val, filterSource, context)
+		evaluatedVal, err = evaluator.applyFilter(evaluatedVal, filterSource, context)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return val, nil
+	return evaluatedVal, nil
 }
 
 type filterCallDesc struct {
@@ -737,7 +737,7 @@ type filterCallDesc struct {
 	argumentExpression string
 }
 
-func (e *Evaluator) parseFilterCall(filterSource string) filterCallDesc {
+func (evaluator *Evaluator) parseFilterCall(filterSource string) filterCallDesc {
 	trimmed := strings.TrimSpace(filterSource)
 	for index := 0; index < len(trimmed); index++ {
 		if isWhitespaceChar(trimmed[index]) {
@@ -753,47 +753,47 @@ func (e *Evaluator) parseFilterCall(filterSource string) filterCallDesc {
 	}
 }
 
-func (e *Evaluator) applyFilter(val any, filterSource string, context *Context) (any, error) {
-	call := e.parseFilterCall(filterSource)
+func (evaluator *Evaluator) applyFilter(val any, filterSource string, context *Context) (any, error) {
+	call := evaluator.parseFilterCall(filterSource)
 
 	switch call.name {
 	case "upper":
-		return strings.ToUpper(e.stringValue(val)), nil
+		return strings.ToUpper(evaluator.stringValue(val)), nil
 	case "lower":
-		return strings.ToLower(e.stringValue(val)), nil
+		return strings.ToLower(evaluator.stringValue(val)), nil
 	case "trim":
-		return strings.TrimSpace(e.stringValue(val)), nil
+		return strings.TrimSpace(evaluator.stringValue(val)), nil
 	case "capitalize":
-		return e.capitalizeText(e.stringValue(val)), nil
+		return evaluator.capitalizeText(evaluator.stringValue(val)), nil
 	case "slug":
-		return e.slugify(e.stringValue(val)), nil
+		return evaluator.slugify(evaluator.stringValue(val)), nil
 	case "length":
-		return e.lengthOf(val), nil
+		return evaluator.lengthOf(val), nil
 	case "default":
-		return e.defaultValue(val, call.argumentExpression, context)
+		return evaluator.defaultValue(val, call.argumentExpression, context)
 	case "currency":
-		return e.currencyValue(val, call.argumentExpression, context)
+		return evaluator.currencyValue(val, call.argumentExpression, context)
 	case "number":
-		return e.numberValue(val, call.argumentExpression, context)
+		return evaluator.numberValue(val, call.argumentExpression, context)
 	case "date":
-		return e.formatTemporalValue(val, call.argumentExpression, context, "2006-01-02")
+		return evaluator.formatTemporalValue(val, call.argumentExpression, context, "2006-01-02")
 	case "time":
-		return e.formatTemporalValue(val, call.argumentExpression, context, "15:04:05")
+		return evaluator.formatTemporalValue(val, call.argumentExpression, context, "15:04:05")
 	case "datetime":
-		return e.formatTemporalValue(val, call.argumentExpression, context, "2006-01-02 15:04:05")
+		return evaluator.formatTemporalValue(val, call.argumentExpression, context, "2006-01-02 15:04:05")
 	default:
 		return nil, fmt.Errorf("unknown filter: %s", call.name)
 	}
 }
 
-func (e *Evaluator) stringValue(value any) string {
+func (evaluator *Evaluator) stringValue(value any) string {
 	if value == nil {
 		return ""
 	}
 	return fmt.Sprintf("%v", value)
 }
 
-func (e *Evaluator) capitalizeText(value string) string {
+func (evaluator *Evaluator) capitalizeText(value string) string {
 	if value == "" {
 		return value
 	}
@@ -804,7 +804,7 @@ var slugRemoveRegex = regexp.MustCompile(`[^a-z0-9\s-]`)
 var slugCollapseRegex = regexp.MustCompile(`[\s_]+`)
 var slugHyphenCollapseRegex = regexp.MustCompile(`-+`)
 
-func (e *Evaluator) slugify(value string) string {
+func (evaluator *Evaluator) slugify(value string) string {
 	if value == "" {
 		return ""
 	}
@@ -816,97 +816,96 @@ func (e *Evaluator) slugify(value string) string {
 	return normalized
 }
 
-func (e *Evaluator) lengthOf(value any) int {
+func (evaluator *Evaluator) lengthOf(value any) int {
 	if value == nil {
 		return 0
 	}
 
-	val := reflect.ValueOf(value)
-	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
-		if val.IsNil() {
+	reflectVal := reflect.ValueOf(value)
+	for reflectVal.Kind() == reflect.Ptr || reflectVal.Kind() == reflect.Interface {
+		if reflectVal.IsNil() {
 			return 0
 		}
-		val = val.Elem()
+		reflectVal = reflectVal.Elem()
 	}
 
-	switch val.Kind() {
+	switch reflectVal.Kind() {
 	case reflect.String:
-		return val.Len()
+		return reflectVal.Len()
 	case reflect.Slice, reflect.Array:
-		return val.Len()
+		return reflectVal.Len()
 	case reflect.Map:
-		return val.Len()
+		return reflectVal.Len()
 	}
 	return len(fmt.Sprintf("%v", value))
 }
 
-func (e *Evaluator) defaultValue(value any, argumentExpression string, context *Context) (any, error) {
+func (evaluator *Evaluator) defaultValue(value any, argumentExpression string, context *Context) (any, error) {
 	if argumentExpression == "" {
 		return nil, fmt.Errorf("default filter requires an argument")
 	}
 
-	if e.toBoolean(value) {
+	if evaluator.toBoolean(value) {
 		return value, nil
 	}
 
-	return e.evaluateValue(argumentExpression, context)
+	return evaluator.evaluateValue(argumentExpression, context)
 }
 
-func (e *Evaluator) currencyValue(value any, argumentExpression string, context *Context) (string, error) {
+func (evaluator *Evaluator) currencyValue(value any, argumentExpression string, context *Context) (string, error) {
 	if value == nil {
 		return "", nil
 	}
 
 	symbol := ""
 	if argumentExpression != "" {
-		symVal, err := e.evaluateValue(argumentExpression, context)
+		symVal, err := evaluator.evaluateValue(argumentExpression, context)
 		if err != nil {
 			return "", err
 		}
 		symbol = fmt.Sprintf("%v", symVal)
 	}
 
-	num, ok := toFloat64(value)
-	if !ok {
+	num, isNum := toFloat64(value)
+	if !isNum {
 		return "", fmt.Errorf("value is not numeric: %v", value)
 	}
 
-	return symbol + e.formatNumberPattern(num, "#,##0.00"), nil
+	return symbol + evaluator.formatNumberPattern(num, "#,##0.00"), nil
 }
 
-func (e *Evaluator) numberValue(value any, argumentExpression string, context *Context) (string, error) {
+func (evaluator *Evaluator) numberValue(value any, argumentExpression string, context *Context) (string, error) {
 	if value == nil {
 		return "", nil
 	}
 
 	pattern := "#,##0.##"
 	if argumentExpression != "" {
-		patVal, err := e.evaluateValue(argumentExpression, context)
+		patVal, err := evaluator.evaluateValue(argumentExpression, context)
 		if err != nil {
 			return "", err
 		}
 		pattern = fmt.Sprintf("%v", patVal)
 	}
 
-	num, ok := toFloat64(value)
-	if !ok {
+	num, isNum := toFloat64(value)
+	if !isNum {
 		return "", fmt.Errorf("value is not numeric: %v", value)
 	}
 
-	return e.formatNumberPattern(num, pattern), nil
+	return evaluator.formatNumberPattern(num, pattern), nil
 }
 
-func (e *Evaluator) formatNumberPattern(num float64, pattern string) string {
-	// A simple pattern formatter that supports common templates like #,##0.00 or #,##0.##
+func (evaluator *Evaluator) formatNumberPattern(num float64, pattern string) string {
 	hasComma := strings.Contains(pattern, ",")
 	decimalPlaces := 0
 	isVariableDecimal := false
 
-	dotIdx := strings.Index(pattern, ".")
-	if dotIdx != -1 {
-		decPart := pattern[dotIdx+1:]
-		decimalPlaces = len(decPart)
-		if strings.Contains(decPart, "#") {
+	dotIndex := strings.Index(pattern, ".")
+	if dotIndex != -1 {
+		decimalPart := pattern[dotIndex+1:]
+		decimalPlaces = len(decimalPart)
+		if strings.Contains(decimalPart, "#") {
 			isVariableDecimal = true
 		}
 	}
@@ -926,91 +925,86 @@ func (e *Evaluator) formatNumberPattern(num float64, pattern string) string {
 
 	if hasComma {
 		parts := strings.Split(formatted, ".")
-		intPart := parts[0]
+		integerPart := parts[0]
 		// Handle negative sign
-		neg := false
-		if strings.HasPrefix(intPart, "-") {
-			neg = true
-			intPart = intPart[1:]
+		isNegative := false
+		if strings.HasPrefix(integerPart, "-") {
+			isNegative = true
+			integerPart = integerPart[1:]
 		}
 
 		var withCommas []string
-		for len(intPart) > 3 {
-			withCommas = append([]string{intPart[len(intPart)-3:]}, withCommas...)
-			intPart = intPart[:len(intPart)-3]
+		for len(integerPart) > 3 {
+			withCommas = append([]string{integerPart[len(integerPart)-3:]}, withCommas...)
+			integerPart = integerPart[:len(integerPart)-3]
 		}
-		if len(intPart) > 0 {
-			withCommas = append([]string{intPart}, withCommas...)
+		if len(integerPart) > 0 {
+			withCommas = append([]string{integerPart}, withCommas...)
 		}
-		res := strings.Join(withCommas, ",")
-		if neg {
-			res = "-" + res
+		resultString := strings.Join(withCommas, ",")
+		if isNegative {
+			resultString = "-" + resultString
 		}
 		if len(parts) > 1 {
-			res = res + "." + parts[1]
+			resultString = resultString + "." + parts[1]
 		}
-		return res
+		return resultString
 	}
-
 	return formatted
 }
 
-func (e *Evaluator) formatTemporalValue(value any, argumentExpression string, context *Context, defaultPattern string) (string, error) {
+func (evaluator *Evaluator) formatTemporalValue(value any, argumentExpression string, context *Context, defaultGoLayout string) (string, error) {
 	if value == nil {
 		return "", nil
 	}
 
-	pattern := defaultPattern
+	goLayout := defaultGoLayout
 	if argumentExpression != "" {
-		patVal, err := e.evaluateValue(argumentExpression, context)
+		fmtVal, err := evaluator.evaluateValue(argumentExpression, context)
 		if err != nil {
 			return "", err
 		}
-		pattern = fmt.Sprintf("%v", patVal)
+		pattern := fmt.Sprintf("%v", fmtVal)
+		goLayout = javaToGoTimeLayout(pattern)
 	}
 
-	goLayout := javaToGoTimeLayout(pattern)
-
-	// Retrieve time.Time
-	var t time.Time
-	switch val := value.(type) {
-	case time.Time:
-		t = val
-	case *time.Time:
-		if val != nil {
-			t = *val
+	var parsedTime time.Time
+	if tVal, isTime := value.(time.Time); isTime {
+		parsedTime = tVal
+	} else if stringVal, isString := value.(string); isString {
+		var parseErr error
+		parsedTime, parseErr = parseTimeString(stringVal)
+		if parseErr != nil {
+			return "", parseErr
 		}
-	case string:
-		var err error
-		t, err = parseTimeString(val)
-		if err != nil {
-			return "", err
-		}
-	default:
-		// Attempt reflection for common types
-		refVal := reflect.ValueOf(value)
-		for refVal.Kind() == reflect.Ptr || refVal.Kind() == reflect.Interface {
-			if refVal.IsNil() {
+	} else {
+		reflectVal := reflect.ValueOf(value)
+		for reflectVal.Kind() == reflect.Ptr || reflectVal.Kind() == reflect.Interface {
+			if reflectVal.IsNil() {
 				return "", nil
 			}
-			refVal = refVal.Elem()
+			reflectVal = reflectVal.Elem()
 		}
-		if refVal.Type().String() == "time.Time" {
-			t = refVal.Interface().(time.Time)
+		if reflectVal.CanInterface() {
+			if tVal, isTime := reflectVal.Interface().(time.Time); isTime {
+				parsedTime = tVal
+			} else {
+				return "", fmt.Errorf("value is not a date/time value: %T", value)
+			}
 		} else {
 			return "", fmt.Errorf("value is not a date/time value: %T", value)
 		}
 	}
 
-	if t.IsZero() {
+	if parsedTime.IsZero() {
 		return "", nil
 	}
 
-	return t.Format(goLayout), nil
+	return parsedTime.Format(goLayout), nil
 }
 
-func parseTimeString(s string) (time.Time, error) {
-	s = strings.TrimSpace(s)
+func parseTimeString(sourceString string) (time.Time, error) {
+	trimmedString := strings.TrimSpace(sourceString)
 	layouts := []string{
 		time.RFC3339,
 		"2006-01-02 15:04:05",
@@ -1020,16 +1014,14 @@ func parseTimeString(s string) (time.Time, error) {
 	}
 
 	for _, layout := range layouts {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return t, nil
+		if parsedTime, err := time.ParseInLocation(layout, trimmedString, time.Local); err == nil {
+			return parsedTime, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("unsupported date/time text: %s", s)
+	return time.Time{}, fmt.Errorf("unsupported date/time text: %s", sourceString)
 }
 
 func javaToGoTimeLayout(pattern string) string {
-	// A basic translator from Java DateTimeFormatter symbols to Go layout symbols
-	// Java symbols: yyyy, yy, MM, dd, HH, hh, mm, ss, a, z, Z
 	replacements := []struct {
 		java string
 		goS  string
@@ -1047,11 +1039,11 @@ func javaToGoTimeLayout(pattern string) string {
 		{"z", "MST"},
 	}
 
-	result := pattern
-	for _, rep := range replacements {
-		result = strings.ReplaceAll(result, rep.java, rep.goS)
+	resultString := pattern
+	for _, replacement := range replacements {
+		resultString = strings.ReplaceAll(resultString, replacement.java, replacement.goS)
 	}
-	return result
+	return resultString
 }
 
 // PropertyReader implementation
@@ -1066,31 +1058,31 @@ type parsedPath struct {
 	segments []pathSegment
 }
 
-func (e *Evaluator) readPath(expression string, context *Context) (any, error) {
-	path := e.parsePath(expression)
-	if path.rootName == "" {
+func (evaluator *Evaluator) readPath(expression string, context *Context) (any, error) {
+	parsedPathObj := evaluator.parsePath(expression)
+	if parsedPathObj.rootName == "" {
 		return nil, nil
 	}
 
-	current := context.Get(path.rootName)
+	currentVal := context.Get(parsedPathObj.rootName)
 
-	for _, seg := range path.segments {
-		if current == nil {
-			if seg.optional {
+	for _, segment := range parsedPathObj.segments {
+		if currentVal == nil {
+			if segment.optional {
 				return nil, nil
 			}
-			return nil, fmt.Errorf("cannot read property %q on nil source", seg.name)
+			return nil, fmt.Errorf("cannot read property %q on nil source", segment.name)
 		}
 		var err error
-		current, err = e.readProperty(current, seg.name, seg.optional)
+		currentVal, err = evaluator.readProperty(currentVal, segment.name, segment.optional)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return current, nil
+	return currentVal, nil
 }
 
-func (e *Evaluator) readProperty(source any, name string, optional bool) (any, error) {
+func (evaluator *Evaluator) readProperty(source any, name string, optional bool) (any, error) {
 	if source == nil {
 		if optional {
 			return nil, nil
@@ -1098,26 +1090,26 @@ func (e *Evaluator) readProperty(source any, name string, optional bool) (any, e
 		return nil, fmt.Errorf("cannot read property %q on nil source", name)
 	}
 
-	val := reflect.ValueOf(source)
-	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
-		if val.IsNil() {
+	reflectVal := reflect.ValueOf(source)
+	for reflectVal.Kind() == reflect.Ptr || reflectVal.Kind() == reflect.Interface {
+		if reflectVal.IsNil() {
 			if optional {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("cannot read property %q on nil pointer", name)
 		}
-		val = val.Elem()
+		reflectVal = reflectVal.Elem()
 	}
 
 	cleanName := strings.TrimSuffix(name, "()")
-	if val.Kind() == reflect.Slice || val.Kind() == reflect.Array || val.Kind() == reflect.String {
+	if reflectVal.Kind() == reflect.Slice || reflectVal.Kind() == reflect.Array || reflectVal.Kind() == reflect.String {
 		if cleanName == "size" || cleanName == "length" || cleanName == "count" {
-			return val.Len(), nil
+			return reflectVal.Len(), nil
 		}
 	}
 
-	if val.Kind() == reflect.Map {
-		keyType := val.Type().Key()
+	if reflectVal.Kind() == reflect.Map {
+		keyType := reflectVal.Type().Key()
 		var mapKey reflect.Value
 
 		if keyType.Kind() == reflect.String {
@@ -1125,38 +1117,38 @@ func (e *Evaluator) readProperty(source any, name string, optional bool) (any, e
 		} else {
 			targetVal := reflect.New(keyType).Elem()
 			if keyType.Kind() >= reflect.Int && keyType.Kind() <= reflect.Int64 {
-				if i, err := strconv.ParseInt(name, 10, 64); err == nil && !targetVal.OverflowInt(i) {
-					targetVal.SetInt(i)
+				if parsedInt, err := strconv.ParseInt(name, 10, 64); err == nil && !targetVal.OverflowInt(parsedInt) {
+					targetVal.SetInt(parsedInt)
 					mapKey = targetVal
 				}
 			} else if keyType.Kind() >= reflect.Uint && keyType.Kind() <= reflect.Uint64 {
-				if u, err := strconv.ParseUint(name, 10, 64); err == nil && !targetVal.OverflowUint(u) {
-					targetVal.SetUint(u)
+				if parsedUint, err := strconv.ParseUint(name, 10, 64); err == nil && !targetVal.OverflowUint(parsedUint) {
+					targetVal.SetUint(parsedUint)
 					mapKey = targetVal
 				}
 			} else {
-				v := reflect.ValueOf(name)
-				if v.Type().AssignableTo(keyType) {
-					mapKey = v
-				} else if v.Type().ConvertibleTo(keyType) {
-					mapKey = v.Convert(keyType)
+				stringVal := reflect.ValueOf(name)
+				if stringVal.Type().AssignableTo(keyType) {
+					mapKey = stringVal
+				} else if stringVal.Type().ConvertibleTo(keyType) {
+					mapKey = stringVal.Convert(keyType)
 				}
 			}
 		}
 
 		if mapKey.IsValid() {
-			mapVal := val.MapIndex(mapKey)
+			mapVal := reflectVal.MapIndex(mapKey)
 			if mapVal.IsValid() {
 				return mapVal.Interface(), nil
 			}
 		}
 		if cleanName == "size" || cleanName == "length" || cleanName == "count" {
-			return val.Len(), nil
+			return reflectVal.Len(), nil
 		}
 		return nil, nil
 	}
 
-	if val.Kind() == reflect.Struct {
+	if reflectVal.Kind() == reflect.Struct {
 		// Try Method first
 		methodNames := []string{
 			name,
@@ -1165,27 +1157,27 @@ func (e *Evaluator) readProperty(source any, name string, optional bool) (any, e
 			"Is" + capitalize(name),
 		}
 
-		for _, mName := range methodNames {
-			method := val.MethodByName(mName)
-			if !method.IsValid() && val.CanAddr() {
-				method = val.Addr().MethodByName(mName)
+		for _, methodName := range methodNames {
+			method := reflectVal.MethodByName(methodName)
+			if !method.IsValid() && reflectVal.CanAddr() {
+				method = reflectVal.Addr().MethodByName(methodName)
 			}
 
 			if method.IsValid() && method.Type().NumIn() == 0 && method.Type().NumOut() >= 1 {
-				res := method.Call(nil)
-				if len(res) == 2 && method.Type().Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {
-					if !res[1].IsNil() {
-						return nil, res[1].Interface().(error)
+				callResults := method.Call(nil)
+				if len(callResults) == 2 && method.Type().Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {
+					if !callResults[1].IsNil() {
+						return nil, callResults[1].Interface().(error)
 					}
 				}
-				return res[0].Interface(), nil
+				return callResults[0].Interface(), nil
 			}
 		}
 
 		// Try Field
-		fieldVal := val.FieldByName(name)
+		fieldVal := reflectVal.FieldByName(name)
 		if !fieldVal.IsValid() {
-			fieldVal = val.FieldByName(capitalize(name))
+			fieldVal = reflectVal.FieldByName(capitalize(name))
 		}
 
 		if fieldVal.IsValid() && fieldVal.CanInterface() {
@@ -1204,70 +1196,70 @@ func (e *Evaluator) readProperty(source any, name string, optional bool) (any, e
 	return nil, fmt.Errorf("cannot read property %q on value of type %T (not a map or struct)", name, source)
 }
 
-func (e *Evaluator) parsePath(expression string) parsedPath {
+func (evaluator *Evaluator) parsePath(expression string) parsedPath {
 	trimmed := strings.TrimSpace(expression)
 	if trimmed == "" {
 		return parsedPath{}
 	}
 
 	var segments []pathSegment
-	var current strings.Builder
+	var currentBuilder strings.Builder
 	var rootName string
 	nextSegmentOptional := false
 
-	index := 0
-	for index < len(trimmed) {
-		currentByte := trimmed[index]
+	characterIndex := 0
+	for characterIndex < len(trimmed) {
+		currentByte := trimmed[characterIndex]
 
 		if currentByte == '.' {
-			if current.Len() == 0 {
+			if currentBuilder.Len() == 0 {
 				// Invalid path, e.g. starting with .
 				return parsedPath{}
 			}
 
 			if rootName == "" {
-				rootName = current.String()
+				rootName = currentBuilder.String()
 			} else {
 				segments = append(segments, pathSegment{
-					name:     current.String(),
+					name:     currentBuilder.String(),
 					optional: nextSegmentOptional,
 				})
 			}
-			current.Reset()
+			currentBuilder.Reset()
 			nextSegmentOptional = false
-			index++
+			characterIndex++
 			continue
 		}
 
-		if currentByte == '?' && index+1 < len(trimmed) && trimmed[index+1] == '.' {
-			if current.Len() == 0 {
+		if currentByte == '?' && characterIndex+1 < len(trimmed) && trimmed[characterIndex+1] == '.' {
+			if currentBuilder.Len() == 0 {
 				return parsedPath{}
 			}
 
 			if rootName == "" {
-				rootName = current.String()
+				rootName = currentBuilder.String()
 			} else {
 				segments = append(segments, pathSegment{
-					name:     current.String(),
+					name:     currentBuilder.String(),
 					optional: nextSegmentOptional,
 				})
 			}
-			current.Reset()
+			currentBuilder.Reset()
 			nextSegmentOptional = true
-			index += 2
+			characterIndex += 2
 			continue
 		}
 
-		current.WriteByte(currentByte)
-		index++
+		currentBuilder.WriteByte(currentByte)
+		characterIndex++
 	}
 
-	if current.Len() > 0 {
+	if currentBuilder.Len() > 0 {
 		if rootName == "" {
-			rootName = current.String()
+			rootName = currentBuilder.String()
 		} else {
 			segments = append(segments, pathSegment{
-				name:     current.String(),
+				name:     currentBuilder.String(),
 				optional: nextSegmentOptional,
 			})
 		}
@@ -1281,42 +1273,42 @@ func (e *Evaluator) parsePath(expression string) parsedPath {
 
 // Helpers
 
-func isWhitespaceChar(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+func isWhitespaceChar(character byte) bool {
+	return character == ' ' || character == '\t' || character == '\n' || character == '\r'
 }
 
-func toFloat64(val any) (float64, bool) {
-	if val == nil {
+func toFloat64(value any) (float64, bool) {
+	if value == nil {
 		return 0, false
 	}
-	v := reflect.ValueOf(val)
-	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
-		if v.IsNil() {
+	reflectVal := reflect.ValueOf(value)
+	for reflectVal.Kind() == reflect.Ptr || reflectVal.Kind() == reflect.Interface {
+		if reflectVal.IsNil() {
 			return 0, false
 		}
-		v = v.Elem()
+		reflectVal = reflectVal.Elem()
 	}
 
-	switch v.Kind() {
+	switch reflectVal.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return float64(v.Int()), true
+		return float64(reflectVal.Int()), true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return float64(v.Uint()), true
+		return float64(reflectVal.Uint()), true
 	case reflect.Float32, reflect.Float64:
-		return v.Float(), true
+		return reflectVal.Float(), true
 	case reflect.String:
-		if f, err := strconv.ParseFloat(v.String(), 64); err == nil {
-			return f, true
+		if parsedFloat, err := strconv.ParseFloat(reflectVal.String(), 64); err == nil {
+			return parsedFloat, true
 		}
 	}
 	return 0, false
 }
 
-func capitalize(s string) string {
-	if s == "" {
+func capitalize(sourceString string) string {
+	if sourceString == "" {
 		return ""
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	return strings.ToUpper(sourceString[:1]) + sourceString[1:]
 }
 
 type binaryArithDesc struct {
@@ -1325,20 +1317,20 @@ type binaryArithDesc struct {
 	right    string
 }
 
-func (e *Evaluator) findBinaryArithmetic(expression string) *binaryArithDesc {
+func (evaluator *Evaluator) findBinaryArithmetic(expression string) *binaryArithDesc {
 	insideSingleQuote := false
 	insideDoubleQuote := false
 	parenthesisDepth := 0
 	bracketDepth := 0
 
-	for index := len(expression) - 1; index >= 0; index-- {
-		current := expression[index]
+	for characterIndex := len(expression) - 1; characterIndex >= 0; characterIndex-- {
+		character := expression[characterIndex]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -1346,19 +1338,19 @@ func (e *Evaluator) findBinaryArithmetic(expression string) *binaryArithDesc {
 			continue
 		}
 
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth++
 			continue
 		}
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth--
 			continue
 		}
-		if current == ']' {
+		if character == ']' {
 			bracketDepth++
 			continue
 		}
-		if current == '[' {
+		if character == '[' {
 			bracketDepth--
 			continue
 		}
@@ -1366,26 +1358,26 @@ func (e *Evaluator) findBinaryArithmetic(expression string) *binaryArithDesc {
 			continue
 		}
 
-		if (current == '+' || current == '-') && index > 0 && index < len(expression)-1 {
-			leftPart := strings.TrimSpace(expression[:index])
+		if (character == '+' || character == '-') && characterIndex > 0 && characterIndex < len(expression)-1 {
+			leftPart := strings.TrimSpace(expression[:characterIndex])
 			if leftPart != "" && !strings.HasSuffix(leftPart, "+") && !strings.HasSuffix(leftPart, "-") && !strings.HasSuffix(leftPart, "*") && !strings.HasSuffix(leftPart, "/") && !strings.HasSuffix(leftPart, "(") && !strings.HasSuffix(leftPart, ",") {
 				return &binaryArithDesc{
 					left:     leftPart,
-					operator: string(current),
-					right:    strings.TrimSpace(expression[index+1:]),
+					operator: string(character),
+					right:    strings.TrimSpace(expression[characterIndex+1:]),
 				}
 			}
 		}
 	}
 
-	for index := len(expression) - 1; index >= 0; index-- {
-		current := expression[index]
+	for characterIndex := len(expression) - 1; characterIndex >= 0; characterIndex-- {
+		character := expression[characterIndex]
 
-		if current == '\'' && !insideDoubleQuote {
+		if character == '\'' && !insideDoubleQuote {
 			insideSingleQuote = !insideSingleQuote
 			continue
 		}
-		if current == '"' && !insideSingleQuote {
+		if character == '"' && !insideSingleQuote {
 			insideDoubleQuote = !insideDoubleQuote
 			continue
 		}
@@ -1393,19 +1385,19 @@ func (e *Evaluator) findBinaryArithmetic(expression string) *binaryArithDesc {
 			continue
 		}
 
-		if current == ')' {
+		if character == ')' {
 			parenthesisDepth++
 			continue
 		}
-		if current == '(' {
+		if character == '(' {
 			parenthesisDepth--
 			continue
 		}
-		if current == ']' {
+		if character == ']' {
 			bracketDepth++
 			continue
 		}
-		if current == '[' {
+		if character == '[' {
 			bracketDepth--
 			continue
 		}
@@ -1413,11 +1405,11 @@ func (e *Evaluator) findBinaryArithmetic(expression string) *binaryArithDesc {
 			continue
 		}
 
-		if (current == '*' || current == '/' || current == '%') && index > 0 && index < len(expression)-1 {
+		if (character == '*' || character == '/' || character == '%') && characterIndex > 0 && characterIndex < len(expression)-1 {
 			return &binaryArithDesc{
-				left:     strings.TrimSpace(expression[:index]),
-				operator: string(current),
-				right:    strings.TrimSpace(expression[index+1:]),
+				left:     strings.TrimSpace(expression[:characterIndex]),
+				operator: string(character),
+				right:    strings.TrimSpace(expression[characterIndex+1:]),
 			}
 		}
 	}

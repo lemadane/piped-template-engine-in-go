@@ -11,7 +11,7 @@ func NewLexer() *Lexer {
 	return &Lexer{}
 }
 
-func (l *Lexer) Tokenize(template string) ([]Token, error) {
+func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 	var tokens []Token
 	if template == "" {
 		return tokens, nil
@@ -60,15 +60,15 @@ func (l *Lexer) Tokenize(template string) ([]Token, error) {
 		if strings.HasPrefix(template[absolutePipeIndex:], "|#") {
 			isBlock := false
 			commentEnd := -1
-			for i := absolutePipeIndex + 2; i < len(template); i++ {
-				if template[i] == '|' {
-					if i > absolutePipeIndex+2 && template[i-1] == '#' {
+			for characterIndex := absolutePipeIndex + 2; characterIndex < len(template); characterIndex++ {
+				if template[characterIndex] == '|' {
+					if characterIndex > absolutePipeIndex+2 && template[characterIndex-1] == '#' {
 						isBlock = true
-						commentEnd = i - 1
+						commentEnd = characterIndex - 1
 						break
 					} else {
 						isBlock = false
-						commentEnd = i
+						commentEnd = characterIndex
 						break
 					}
 				}
@@ -99,7 +99,7 @@ func (l *Lexer) Tokenize(template string) ([]Token, error) {
 
 		absoluteClosingPipe := absolutePipeIndex + 1 + closingPipe
 		content := strings.TrimSpace(template[absolutePipeIndex+1 : absoluteClosingPipe])
-		tokenType := l.classifyToken(content)
+		tokenType := lexer.classifyToken(content)
 
 		tokens = append(tokens, Token{
 			Type:     tokenType,
@@ -112,7 +112,7 @@ func (l *Lexer) Tokenize(template string) ([]Token, error) {
 	return tokens, nil
 }
 
-func (l *Lexer) classifyToken(content string) TokenType {
+func (lexer *Lexer) classifyToken(content string) TokenType {
 	if strings.HasPrefix(content, "if ") {
 		return TokenIf
 	} else if strings.HasPrefix(content, "else if ") {

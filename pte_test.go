@@ -1688,7 +1688,7 @@ func TestSwitchSemanticsInvalid(t *testing.T) {
 	}
 }
 
-func TestConfirmedIssuesRegressionSuite(t *testing.T) {
+func TestIssue1Regression(t *testing.T) {
 	t.Run("Issue 1: Template-root directory traversal", func(t *testing.T) {
 		tempDir := t.TempDir()
 		root := filepath.Join(tempDir, "templates")
@@ -1715,7 +1715,249 @@ func TestConfirmedIssuesRegressionSuite(t *testing.T) {
 			t.Errorf("expected escape template root error, got %v", err)
 		}
 	})
+}
 
+func TestSymlinkAndPathTraversalRegression(t *testing.T) {
+	supportsSymlinks := func(t *testing.T, tempDir string) bool {
+		oldPath := filepath.Join(tempDir, "target")
+		newPath := filepath.Join(tempDir, "symlink")
+		_ = os.WriteFile(oldPath, []byte("test"), 0644)
+		err := os.Symlink(oldPath, newPath)
+		return err == nil
+	}
+
+	t.Run("1. Direct parent traversal", func(t *testing.T) {
+		tempDir := t.TempDir()
+		root := filepath.Join(tempDir, "templates")
+		priv := filepath.Join(tempDir, "private")
+		_ = os.MkdirAll(root, 0755)
+		_ = os.MkdirAll(priv, 0755)
+		_ = os.WriteFile(filepath.Join(priv, "secret.pte"), []byte("SECRET"), 0644)
+
+		engine := NewEngine(root)
+		var buf bytes.Buffer
+		err := engine.Render(&buf, "../private/secret", nil)
+		if err == nil {
+			t.Fatalf("expected error for direct parent traversal, got nil")
+		}
+		if !strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("expected escape template root error, got: %v", err)
+		}
+	})
+
+	t.Run("2. Prefix-sibling traversal", func(t *testing.T) {
+		tempDir := t.TempDir()
+		root := filepath.Join(tempDir, "templates")
+		privRoot := filepath.Join(tempDir, "templates-private")
+		_ = os.MkdirAll(root, 0755)
+		_ = os.MkdirAll(privRoot, 0755)
+		_ = os.WriteFile(filepath.Join(privRoot, "secret.pte"), []byte("SECRET"), 0644)
+
+		engine := NewEngine(root)
+		var buf bytes.Buffer
+		err := engine.Render(&buf, "../templates-private/secret", nil)
+		if err == nil {
+			t.Fatalf("expected error for prefix-sibling traversal, got nil")
+		}
+		if !strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("expected escape template root error, got: %v", err)
+		}
+	})
+
+	t.Run("3. Symlinked directory escape", func(t *testing.T) {
+		tempDir := t.TempDir()
+		if !supportsSymlinks(t, tempDir) {
+			t.Skip("symlinks not supported in environment")
+		}
+
+		root := filepath.Join(tempDir, "templates")
+		priv := filepath.Join(tempDir, "private")
+		_ = os.MkdirAll(root, 0755)
+		_ = os.MkdirAll(priv, 0755)
+		_ = os.WriteFile(filepath.Join(priv, "secret.pte"), []byte("SECRET_DATA"), 0644)
+
+		symDir := filepath.Join(root, "leak")
+		if err := os.Symlink(priv, symDir); err != nil {
+			t.Skipf("symlink creation failed: %v", err)
+		}
+
+		engine := NewEngine(root)
+		var buf bytes.Buffer
+		err := engine.Render(&buf, "leak/secret", nil)
+		if err == nil {
+			t.Fatalf("expected error rendering symlinked directory escape, got content %q", buf.String())
+		}
+		if !strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("expected escape template root error, got: %v", err)
+		}
+		if strings.Contains(buf.String(), "SECRET_DATA") {
+			t.Errorf("rendered sensitive external content despite escape attempt!")
+		}
+	})
+
+	t.Run("4. Symlinked file escape", func(t *testing.T) {
+		tempDir := t.TempDir()
+		if !supportsSymlinks(t, tempDir) {
+			t.Skip("symlinks not supported in environment")
+		}
+
+		root := filepath.Join(tempDir, "templates")
+		priv := filepath.Join(tempDir, "private")
+		_ = os.MkdirAll(root, 0755)
+		_ = os.MkdirAll(priv, 0755)
+		targetFile := filepath.Join(priv, "secret.pte")
+		_ = os.WriteFile(targetFile, []byte("SECRET_FILE"), 0644)
+
+		symFile := filepath.Join(root, "secret.pte")
+		if err := os.Symlink(targetFile, symFile); err != nil {
+			t.Skipf("symlink creation failed: %v", err)
+		}
+
+		engine := NewEngine(root)
+		var buf bytes.Buffer
+		err := engine.Render(&buf, "secret", nil)
+		if err == nil {
+			t.Fatalf("expected error for symlinked file escape, got output %q", buf.String())
+		}
+		if !strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("expected escape template root error, got: %v", err)
+		}
+	})
+
+	t.Run("5. Valid nested template", func(t *testing.T) {
+		tempDir := t.TempDir()
+		root := filepath.Join(tempDir, "templates")
+		pagesDir := filepath.Join(root, "pages")
+		_ = os.MkdirAll(pagesDir, 0755)
+		_ = os.WriteFile(filepath.Join(pagesDir, "dashboard.pte"), []byte("<h1>Dashboard</h1>"), 0644)
+
+		engine := NewEngine(root)
+		var buf bytes.Buffer
+		err := engine.Render(&buf, "pages/dashboard", nil)
+		if err != nil {
+			t.Fatalf("expected successful render, got error: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<h1>Dashboard</h1>" {
+			t.Errorf("expected '<h1>Dashboard</h1>', got %q", got)
+		}
+	})
+
+	t.Run("6. Configured root is itself a symlink", func(t *testing.T) {
+		tempDir := t.TempDir()
+		if !supportsSymlinks(t, tempDir) {
+			t.Skip("symlinks not supported in environment")
+		}
+
+		realRoot := filepath.Join(tempDir, "real-templates")
+		privDir := filepath.Join(tempDir, "private-dir")
+		_ = os.MkdirAll(realRoot, 0755)
+		_ = os.MkdirAll(privDir, 0755)
+
+		_ = os.WriteFile(filepath.Join(realRoot, "home.pte"), []byte("HOME"), 0644)
+		_ = os.WriteFile(filepath.Join(privDir, "secret.pte"), []byte("SECRET"), 0644)
+
+		symRoot := filepath.Join(tempDir, "sym-templates")
+		if err := os.Symlink(realRoot, symRoot); err != nil {
+			t.Skipf("symlink creation failed: %v", err)
+		}
+
+		_ = os.Symlink(privDir, filepath.Join(realRoot, "leak"))
+
+		engine := NewEngine(symRoot)
+
+		var bufOk bytes.Buffer
+		if err := engine.Render(&bufOk, "home", nil); err != nil {
+			t.Errorf("expected render inside symlink root to succeed, got: %v", err)
+		} else if got := bufOk.String(); got != "HOME" {
+			t.Errorf("expected 'HOME', got %q", got)
+		}
+
+		var bufEscape bytes.Buffer
+		err := engine.Render(&bufEscape, "leak/secret", nil)
+		if err == nil {
+			t.Fatalf("expected escape through symlink inside symlink root to fail")
+		}
+		if !strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("expected escape template root error, got: %v", err)
+		}
+	})
+
+	t.Run("7. Missing template error distinction", func(t *testing.T) {
+		tempDir := t.TempDir()
+		root := filepath.Join(tempDir, "templates")
+		_ = os.MkdirAll(root, 0755)
+
+		engine := NewEngine(root)
+		var buf bytes.Buffer
+		err := engine.Render(&buf, "pages/missing", nil)
+		if err == nil {
+			t.Fatalf("expected error for missing template, got nil")
+		}
+		if strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("missing template incorrectly described as escaping root: %v", err)
+		}
+		if !strings.Contains(err.Error(), "failed to load template") && !os.IsNotExist(err) {
+			t.Errorf("expected file missing error, got: %v", err)
+		}
+	})
+
+	t.Run("8. Includes and layouts escape prevention", func(t *testing.T) {
+		tempDir := t.TempDir()
+		if !supportsSymlinks(t, tempDir) {
+			t.Skip("symlinks not supported in environment")
+		}
+
+		root := filepath.Join(tempDir, "templates")
+		priv := filepath.Join(tempDir, "private")
+		_ = os.MkdirAll(root, 0755)
+		_ = os.MkdirAll(priv, 0755)
+
+		_ = os.WriteFile(filepath.Join(priv, "secret.pte"), []byte("SECRET"), 0644)
+		_ = os.Symlink(priv, filepath.Join(root, "leak"))
+
+		_ = os.WriteFile(filepath.Join(root, "inc.pte"), []byte("|include leak/secret|"), 0644)
+		_ = os.WriteFile(filepath.Join(root, "lay.pte"), []byte("|layout leak/secret|"), 0644)
+
+		engine := NewEngine(root)
+
+		var bufInc bytes.Buffer
+		errInc := engine.Render(&bufInc, "inc", nil)
+		if errInc == nil || !strings.Contains(errInc.Error(), "must not escape template root") {
+			t.Errorf("expected include escape to be rejected, got: %v", errInc)
+		}
+
+		var bufLay bytes.Buffer
+		errLay := engine.Render(&bufLay, "lay", nil)
+		if errLay == nil || !strings.Contains(errLay.Error(), "must not escape template root") {
+			t.Errorf("expected layout escape to be rejected, got: %v", errLay)
+		}
+	})
+
+	t.Run("9. Embedded filesystem validity and escape rejection", func(t *testing.T) {
+		memFS := fstest.MapFS{
+			"templates/valid.pte": &fstest.MapFile{
+				Data: []byte("VALID_EMBEDDED"),
+			},
+		}
+
+		engine := NewEngine("templates", WithFS(memFS))
+
+		var bufOk bytes.Buffer
+		if err := engine.Render(&bufOk, "valid", nil); err != nil {
+			t.Errorf("expected valid embedded render to succeed, got: %v", err)
+		} else if got := bufOk.String(); got != "VALID_EMBEDDED" {
+			t.Errorf("expected 'VALID_EMBEDDED', got %q", got)
+		}
+
+		var bufEsc bytes.Buffer
+		err := engine.Render(&bufEsc, "../private/secret", nil)
+		if err == nil || !strings.Contains(err.Error(), "must not escape template root") {
+			t.Errorf("expected embedded path traversal escape to be rejected, got: %v", err)
+		}
+	})
+}
+
+func TestConfirmedIssuesRegressionSuite(t *testing.T) {
 	t.Run("Issue 2: Conditional attributes race condition", func(t *testing.T) {
 		engine := NewEngine("")
 		tmpl := `<button |attr disabled if disabled|>X</button>`

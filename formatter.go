@@ -17,90 +17,90 @@ var preservedTagRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)<style[\s>][\s\S]*?</style>`),
 }
 
-func MinifyHTML(html string) string {
-	if html == "" {
+func MinifyHTML(htmlString string) string {
+	if htmlString == "" {
 		return ""
 	}
-	html = commentRegex.ReplaceAllString(html, "")
+	processedHtml := commentRegex.ReplaceAllString(htmlString, "")
 
 	var placeholders []string
-	for _, rgx := range preservedTagRegexes {
-		html = rgx.ReplaceAllStringFunc(html, func(m string) string {
-			idx := len(placeholders)
-			placeholders = append(placeholders, m)
-			return fmt.Sprintf("___PTE_PRESERVED_%d___", idx)
+	for _, regexPattern := range preservedTagRegexes {
+		processedHtml = regexPattern.ReplaceAllStringFunc(processedHtml, func(matchedTag string) string {
+			placeholderIndex := len(placeholders)
+			placeholders = append(placeholders, matchedTag)
+			return fmt.Sprintf("___PTE_PRESERVED_%d___", placeholderIndex)
 		})
 	}
 
-	res := spaceRegex.ReplaceAllString(html, " ")
-	res = tagSpaceRegex.ReplaceAllString(res, "><")
-	res = strings.TrimSpace(res)
+	resultString := spaceRegex.ReplaceAllString(processedHtml, " ")
+	resultString = tagSpaceRegex.ReplaceAllString(resultString, "><")
+	resultString = strings.TrimSpace(resultString)
 
-	for i, ph := range placeholders {
-		res = strings.Replace(res, fmt.Sprintf("___PTE_PRESERVED_%d___", i), ph, 1)
+	for placeholderIndex, placeholderText := range placeholders {
+		resultString = strings.Replace(resultString, fmt.Sprintf("___PTE_PRESERVED_%d___", placeholderIndex), placeholderText, 1)
 	}
 
-	return res
+	return resultString
 }
 
-func PrettifyHTML(html string) string {
-	if html == "" {
+func PrettifyHTML(htmlString string) string {
+	if htmlString == "" {
 		return ""
 	}
-	tokens := splitHtmlTokens(html)
-	var sb strings.Builder
-	indent := 0
+	htmlTokens := splitHtmlTokens(htmlString)
+	var stringBuilder strings.Builder
+	indentationLevel := 0
 
-	for _, token := range tokens {
-		trimmed := strings.TrimSpace(token)
-		if trimmed == "" {
+	for _, token := range htmlTokens {
+		trimmedToken := strings.TrimSpace(token)
+		if trimmedToken == "" {
 			continue
 		}
 
-		if strings.HasPrefix(trimmed, "</") {
-			indent = indent - 1
-			if indent < 0 {
-				indent = 0
+		if strings.HasPrefix(trimmedToken, "</") {
+			indentationLevel = indentationLevel - 1
+			if indentationLevel < 0 {
+				indentationLevel = 0
 			}
-			sb.WriteString("\n" + strings.Repeat("  ", indent) + trimmed)
-		} else if strings.HasPrefix(trimmed, "<") &&
-			!strings.HasPrefix(trimmed, "<!") &&
-			!strings.HasSuffix(trimmed, "/>") &&
-			!strings.HasPrefix(trimmed, "<?") {
-			sb.WriteString("\n" + strings.Repeat("  ", indent) + trimmed)
-			indent++
+			stringBuilder.WriteString("\n" + strings.Repeat("  ", indentationLevel) + trimmedToken)
+		} else if strings.HasPrefix(trimmedToken, "<") &&
+			!strings.HasPrefix(trimmedToken, "<!") &&
+			!strings.HasSuffix(trimmedToken, "/>") &&
+			!strings.HasPrefix(trimmedToken, "<?") {
+			stringBuilder.WriteString("\n" + strings.Repeat("  ", indentationLevel) + trimmedToken)
+			indentationLevel++
 		} else {
-			sb.WriteString(trimmed)
+			stringBuilder.WriteString(trimmedToken)
 		}
 	}
-	return strings.TrimSpace(sb.String())
+	return strings.TrimSpace(stringBuilder.String())
 }
 
-func splitHtmlTokens(html string) []string {
+func splitHtmlTokens(htmlString string) []string {
 	var tokens []string
-	var current strings.Builder
+	var currentTokenBuilder strings.Builder
 
-	inTag := false
-	for i := 0; i < len(html); i++ {
-		c := html[i]
-		if c == '<' && !inTag {
-			if current.Len() > 0 {
-				tokens = append(tokens, current.String())
-				current.Reset()
+	insideTag := false
+	for characterIndex := 0; characterIndex < len(htmlString); characterIndex++ {
+		character := htmlString[characterIndex]
+		if character == '<' && !insideTag {
+			if currentTokenBuilder.Len() > 0 {
+				tokens = append(tokens, currentTokenBuilder.String())
+				currentTokenBuilder.Reset()
 			}
-			inTag = true
-		} else if c == '>' && inTag {
-			current.WriteByte(c)
-			tokens = append(tokens, current.String())
-			current.Reset()
-			inTag = false
+			insideTag = true
+		} else if character == '>' && insideTag {
+			currentTokenBuilder.WriteByte(character)
+			tokens = append(tokens, currentTokenBuilder.String())
+			currentTokenBuilder.Reset()
+			insideTag = false
 			continue
 		}
-		current.WriteByte(c)
+		currentTokenBuilder.WriteByte(character)
 	}
 
-	if current.Len() > 0 {
-		tokens = append(tokens, current.String())
+	if currentTokenBuilder.Len() > 0 {
+		tokens = append(tokens, currentTokenBuilder.String())
 	}
 	return tokens
 }

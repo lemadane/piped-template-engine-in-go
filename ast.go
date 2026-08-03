@@ -14,7 +14,7 @@ import (
 )
 
 type Node interface {
-	Render(ctx *Context, w io.Writer) error
+	Render(context *Context, writer io.Writer) error
 }
 
 var (
@@ -28,15 +28,15 @@ type BlockNode struct {
 	Children []Node
 }
 
-func (n *BlockNode) Render(ctx *Context, w io.Writer) error {
+func (node *BlockNode) Render(context *Context, writer io.Writer) error {
 	skipNextLeadingWhitespace := false
-	for _, child := range n.Children {
+	for _, child := range node.Children {
 		if skipNextLeadingWhitespace {
-			if textNode, ok := child.(*TextNode); ok {
+			if textNode, isTextNode := child.(*TextNode); isTextNode {
 				text := string(textNode.Value)
 				trimmed := strings.TrimLeft(text, " \t\r\n")
 				if strings.HasPrefix(trimmed, ">") || strings.HasPrefix(trimmed, "/>") {
-					_, err := io.WriteString(w, trimmed)
+					_, err := io.WriteString(writer, trimmed)
 					skipNextLeadingWhitespace = false
 					if err != nil {
 						return err
@@ -47,15 +47,15 @@ func (n *BlockNode) Render(ctx *Context, w io.Writer) error {
 			skipNextLeadingWhitespace = false
 		}
 
-		err := child.Render(ctx, w)
+		err := child.Render(context, writer)
 		if err == errConditionalAttributeSkipped {
-			if buf, ok := w.(*bytes.Buffer); ok {
-				data := buf.Bytes()
-				for len(data) > 0 && isWhitespaceChar(data[len(data)-1]) {
-					data = data[:len(data)-1]
+			if buffer, isBuffer := writer.(*bytes.Buffer); isBuffer {
+				bufferBytes := buffer.Bytes()
+				for len(bufferBytes) > 0 && isWhitespaceChar(bufferBytes[len(bufferBytes)-1]) {
+					bufferBytes = bufferBytes[:len(bufferBytes)-1]
 				}
-				buf.Reset()
-				buf.Write(data)
+				buffer.Reset()
+				buffer.Write(bufferBytes)
 			}
 			skipNextLeadingWhitespace = true
 			continue
@@ -76,8 +76,8 @@ func NewTextNode(val string) *TextNode {
 	return &TextNode{Value: []byte(val)}
 }
 
-func (n *TextNode) Render(ctx *Context, w io.Writer) error {
-	_, err := w.Write(n.Value)
+func (node *TextNode) Render(context *Context, writer io.Writer) error {
+	_, err := writer.Write(node.Value)
 	return err
 }
 
@@ -100,42 +100,42 @@ type ExpressionNode struct {
 	Condition  string
 }
 
-func (n *ExpressionNode) Render(ctx *Context, w io.Writer) error {
-	if n.Condition != "" {
-		cond, err := n.Evaluator.EvaluateBoolean(n.Condition, ctx)
+func (node *ExpressionNode) Render(context *Context, writer io.Writer) error {
+	if node.Condition != "" {
+		isConditionTrue, err := node.Evaluator.EvaluateBoolean(node.Condition, context)
 		if err != nil {
 			return err
 		}
-		if !cond {
-			if n.Mode == ModeAttributeEscaped {
+		if !isConditionTrue {
+			if node.Mode == ModeAttributeEscaped {
 				return errConditionalAttributeSkipped
 			}
 			return nil
 		}
 
-		if n.Mode == ModeAttributeEscaped {
-			attrOutput, err := n.renderConditionalAttributeOutput(n.Expression, ctx)
+		if node.Mode == ModeAttributeEscaped {
+			attrOutput, err := node.renderConditionalAttributeOutput(node.Expression, context)
 			if err != nil {
 				return err
 			}
 			if attrOutput != "" {
-				_, err = io.WriteString(w, attrOutput)
+				_, err = io.WriteString(writer, attrOutput)
 				return err
 			}
 		}
 	}
 
-	val, err := n.Evaluator.Evaluate(n.Expression, ctx)
+	evaluatedValue, err := node.Evaluator.Evaluate(node.Expression, context)
 	if err != nil {
 		return err
 	}
 
-	formatted := n.formatValue(val)
-	_, err = io.WriteString(w, formatted)
+	formatted := node.formatValue(evaluatedValue)
+	_, err = io.WriteString(writer, formatted)
 	return err
 }
 
-func (n *ExpressionNode) renderConditionalAttributeOutput(expression string, ctx *Context) (string, error) {
+func (node *ExpressionNode) renderConditionalAttributeOutput(expression string, context *Context) (string, error) {
 	trimmedExpression := strings.TrimSpace(expression)
 
 	if isConditionalAttributeLiteral(trimmedExpression) {
@@ -158,16 +158,16 @@ func (n *ExpressionNode) renderConditionalAttributeOutput(expression string, ctx
 		return "", fmt.Errorf("conditional attribute value must not be empty")
 	}
 
-	value, err := n.Evaluator.Evaluate(valueExpression, ctx)
+	evaluatedValue, err := node.Evaluator.Evaluate(valueExpression, context)
 	if err != nil {
 		return "", err
 	}
 
-	return attributeName + "=\"" + attributeEscape(value) + "\"", nil
+	return attributeName + "=\"" + attributeEscape(evaluatedValue) + "\"", nil
 }
 
-func isConditionalAttributeLiteral(expr string) bool {
-	return isValidAttributeName(expr) && !strings.Contains(expr, "=")
+func isConditionalAttributeLiteral(expression string) bool {
+	return isValidAttributeName(expression) && !strings.Contains(expression, "=")
 }
 
 var attrNameRegex = regexp.MustCompile(`^[A-Za-z_:][A-Za-z0-9_:.\-]*$`)
@@ -212,12 +212,12 @@ func findTopLevelEqualsIndex(expression string) int {
 	return -1
 }
 
-func (n *ExpressionNode) formatValue(value any) string {
+func (node *ExpressionNode) formatValue(value any) string {
 	if value == nil {
 		return ""
 	}
 
-	switch n.Mode {
+	switch node.Mode {
 	case ModeHtmlEscaped:
 		return htmlEscape(value)
 	case ModeTrustedHtml:
@@ -225,11 +225,11 @@ func (n *ExpressionNode) formatValue(value any) string {
 	case ModeAttributeEscaped:
 		return attributeEscape(value)
 	case ModeJsonEncoded:
-		data, err := json.Marshal(value)
+		jsonData, err := json.Marshal(value)
 		if err != nil {
 			return "null"
 		}
-		return string(data)
+		return string(jsonData)
 	case ModeUrlEncoded:
 		return url.QueryEscape(fmt.Sprintf("%v", value))
 	default:
@@ -238,51 +238,51 @@ func (n *ExpressionNode) formatValue(value any) string {
 }
 
 func htmlEscape(val any) string {
-	s := fmt.Sprintf("%v", val)
-	var sb strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
+	stringValue := fmt.Sprintf("%v", val)
+	var stringBuilder strings.Builder
+	for characterIndex := 0; characterIndex < len(stringValue); characterIndex++ {
+		character := stringValue[characterIndex]
+		switch character {
 		case '&':
-			sb.WriteString("&amp;")
+			stringBuilder.WriteString("&amp;")
 		case '<':
-			sb.WriteString("&lt;")
+			stringBuilder.WriteString("&lt;")
 		case '>':
-			sb.WriteString("&gt;")
+			stringBuilder.WriteString("&gt;")
 		case '"':
-			sb.WriteString("&quot;")
+			stringBuilder.WriteString("&quot;")
 		case '\'':
-			sb.WriteString("&#039;")
+			stringBuilder.WriteString("&#039;")
 		default:
-			sb.WriteByte(c)
+			stringBuilder.WriteByte(character)
 		}
 	}
-	return sb.String()
+	return stringBuilder.String()
 }
 
 func attributeEscape(val any) string {
-	s := fmt.Sprintf("%v", val)
-	var sb strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
+	stringValue := fmt.Sprintf("%v", val)
+	var stringBuilder strings.Builder
+	for characterIndex := 0; characterIndex < len(stringValue); characterIndex++ {
+		character := stringValue[characterIndex]
+		switch character {
 		case '&':
-			sb.WriteString("&amp;")
+			stringBuilder.WriteString("&amp;")
 		case '<':
-			sb.WriteString("&lt;")
+			stringBuilder.WriteString("&lt;")
 		case '>':
-			sb.WriteString("&gt;")
+			stringBuilder.WriteString("&gt;")
 		case '"':
-			sb.WriteString("&quot;")
+			stringBuilder.WriteString("&quot;")
 		case '\'':
-			sb.WriteString("&#039;")
+			stringBuilder.WriteString("&#039;")
 		case '`':
-			sb.WriteString("&#096;")
+			stringBuilder.WriteString("&#096;")
 		default:
-			sb.WriteByte(c)
+			stringBuilder.WriteByte(character)
 		}
 	}
-	return sb.String()
+	return stringBuilder.String()
 }
 
 // ElseIfBranch represents a single else-if conditional branch
@@ -300,27 +300,27 @@ type IfNode struct {
 	Evaluator      *Evaluator
 }
 
-func (n *IfNode) Render(ctx *Context, w io.Writer) error {
-	cond, err := n.Evaluator.EvaluateBoolean(n.Condition, ctx)
+func (node *IfNode) Render(context *Context, writer io.Writer) error {
+	isConditionTrue, err := node.Evaluator.EvaluateBoolean(node.Condition, context)
 	if err != nil {
 		return err
 	}
-	if cond {
-		return n.ThenBlock.Render(ctx, w)
+	if isConditionTrue {
+		return node.ThenBlock.Render(context, writer)
 	}
 
-	for _, branch := range n.ElseIfBranches {
-		bCond, err := n.Evaluator.EvaluateBoolean(branch.Condition, ctx)
+	for _, branch := range node.ElseIfBranches {
+		branchConditionTrue, err := node.Evaluator.EvaluateBoolean(branch.Condition, context)
 		if err != nil {
 			return err
 		}
-		if bCond {
-			return branch.Block.Render(ctx, w)
+		if branchConditionTrue {
+			return branch.Block.Render(context, writer)
 		}
 	}
 
-	if n.ElseBlock != nil {
-		return n.ElseBlock.Render(ctx, w)
+	if node.ElseBlock != nil {
+		return node.ElseBlock.Render(context, writer)
 	}
 	return nil
 }
@@ -338,43 +338,43 @@ type EachNode struct {
 	IsMapLoop            bool
 }
 
-func (n *EachNode) Render(ctx *Context, w io.Writer) error {
-	rawVal, err := n.Evaluator.Evaluate(n.CollectionExpression, ctx)
+func (node *EachNode) Render(context *Context, writer io.Writer) error {
+	rawValue, err := node.Evaluator.Evaluate(node.CollectionExpression, context)
 	if err != nil {
 		return err
 	}
 
-	items, isMap, total := n.toIterable(rawVal)
+	items, isMap, totalItems := node.toIterable(rawValue)
 	executedAtLeastOnce := false
 
-	if total > 0 {
-		for i, item := range items {
+	if totalItems > 0 {
+		for itemIndex, item := range items {
 			executedAtLeastOnce = true
-			isLast := (i == total-1)
-			loopMeta := map[string]any{
-				"index": i,
-				"count": i + 1,
-				"first": i == 0,
-				"last":  isLast,
-				"total": total,
+			isLastItem := (itemIndex == totalItems-1)
+			loopMetadata := map[string]any{
+				"index": itemIndex,
+				"count": itemIndex + 1,
+				"first": itemIndex == 0,
+				"last":  isLastItem,
+				"total": totalItems,
 			}
 
-			scope := make(map[string]any)
-			if isMap && n.IsMapLoop {
-				entry := item.(map[string]any)
-				scope[n.KeyName] = entry["key"]
-				scope[n.ValueName] = entry["value"]
+			loopScope := make(map[string]any)
+			if isMap && node.IsMapLoop {
+				entryMap := item.(map[string]any)
+				loopScope[node.KeyName] = entryMap["key"]
+				loopScope[node.ValueName] = entryMap["value"]
 			} else if isMap {
 				// Map treated as list of entries if not explicit map loop
-				entry := item.(map[string]any)
-				scope[n.ItemName] = entry
+				entryMap := item.(map[string]any)
+				loopScope[node.ItemName] = entryMap
 			} else {
-				scope[n.ItemName] = item
+				loopScope[node.ItemName] = item
 			}
-			scope["each"] = loopMeta
+			loopScope["each"] = loopMetadata
 
-			subContext := ctx.SubContext(scope)
-			err := n.BodyBlock.Render(subContext, w)
+			subContext := context.SubContext(loopScope)
+			err := node.BodyBlock.Render(subContext, writer)
 			if errors.Is(err, errBreak) {
 				break
 			}
@@ -385,8 +385,8 @@ func (n *EachNode) Render(ctx *Context, w io.Writer) error {
 				return err
 			}
 
-			if n.SeparatorNode != nil && !isLast {
-				if err := n.SeparatorNode.Render(subContext, w); err != nil {
+			if node.SeparatorNode != nil && !isLastItem {
+				if err := node.SeparatorNode.Render(subContext, writer); err != nil {
 					if errors.Is(err, errBreak) {
 						break
 					}
@@ -399,42 +399,42 @@ func (n *EachNode) Render(ctx *Context, w io.Writer) error {
 		}
 	}
 
-	if !executedAtLeastOnce && n.ElseBlock != nil {
-		return n.ElseBlock.Render(ctx, w)
+	if !executedAtLeastOnce && node.ElseBlock != nil {
+		return node.ElseBlock.Render(context, writer)
 	}
 
 	return nil
 }
 
-func (n *EachNode) toIterable(value any) ([]any, bool, int) {
+func (node *EachNode) toIterable(value any) ([]any, bool, int) {
 	if value == nil {
 		return nil, false, 0
 	}
 
-	val := reflect.ValueOf(value)
-	for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
-		if val.IsNil() {
+	reflectValue := reflect.ValueOf(value)
+	for reflectValue.Kind() == reflect.Ptr || reflectValue.Kind() == reflect.Interface {
+		if reflectValue.IsNil() {
 			return nil, false, 0
 		}
-		val = val.Elem()
+		reflectValue = reflectValue.Elem()
 	}
 
-	switch val.Kind() {
+	switch reflectValue.Kind() {
 	case reflect.Slice, reflect.Array:
-		length := val.Len()
+		length := reflectValue.Len()
 		items := make([]any, length)
-		for i := 0; i < length; i++ {
-			items[i] = val.Index(i).Interface()
+		for index := 0; index < length; index++ {
+			items[index] = reflectValue.Index(index).Interface()
 		}
 		return items, false, length
 
 	case reflect.Map:
-		length := val.Len()
+		length := reflectValue.Len()
 		items := make([]any, 0, length)
-		for _, key := range val.MapKeys() {
+		for _, key := range reflectValue.MapKeys() {
 			items = append(items, map[string]any{
 				"key":   key.Interface(),
-				"value": val.MapIndex(key).Interface(),
+				"value": reflectValue.MapIndex(key).Interface(),
 			})
 		}
 		return items, true, length
@@ -464,7 +464,7 @@ type fallthroughNode struct {
 	Position int
 }
 
-func (n *fallthroughNode) Render(ctx *Context, w io.Writer) error {
+func (node *fallthroughNode) Render(context *Context, writer io.Writer) error {
 	return nil
 }
 
@@ -476,8 +476,8 @@ type SwitchNode struct {
 	SourcePosition int
 }
 
-func (n *SwitchNode) Render(ctx *Context, w io.Writer) error {
-	switchVal, err := n.Evaluator.Evaluate(n.Expression, ctx)
+func (node *SwitchNode) Render(context *Context, writer io.Writer) error {
+	switchValue, err := node.Evaluator.Evaluate(node.Expression, context)
 	if err != nil {
 		return err
 	}
@@ -485,18 +485,18 @@ func (n *SwitchNode) Render(ctx *Context, w io.Writer) error {
 	targetIndex := -1
 	defaultIndex := -1
 
-	for index, clause := range n.Clauses {
+	for clauseIndex, clause := range node.Clauses {
 		if clause.Kind == SwitchCaseClause {
-			caseVal, err := n.Evaluator.Evaluate(clause.Expression, ctx)
+			caseValue, err := node.Evaluator.Evaluate(clause.Expression, context)
 			if err != nil {
 				return err
 			}
-			if n.Evaluator.ValuesEqual(switchVal, caseVal) {
-				targetIndex = index
+			if node.Evaluator.ValuesEqual(switchValue, caseValue) {
+				targetIndex = clauseIndex
 				break
 			}
 		} else if clause.Kind == SwitchDefaultClause && defaultIndex == -1 {
-			defaultIndex = index
+			defaultIndex = clauseIndex
 		}
 	}
 
@@ -508,9 +508,9 @@ func (n *SwitchNode) Render(ctx *Context, w io.Writer) error {
 		return nil
 	}
 
-	for index := targetIndex; index < len(n.Clauses); index++ {
-		clause := n.Clauses[index]
-		if err := clause.Body.Render(ctx, w); err != nil {
+	for clauseIndex := targetIndex; clauseIndex < len(node.Clauses); clauseIndex++ {
+		clause := node.Clauses[clauseIndex]
+		if err := clause.Body.Render(context, writer); err != nil {
 			return err
 		}
 		if !clause.AllowsFallthrough {
@@ -528,36 +528,34 @@ type IncludeNode struct {
 	Evaluator       *Evaluator
 }
 
-func (n *IncludeNode) Render(ctx *Context, w io.Writer) error {
-	engineObj := ctx.Get("_engine")
+func (node *IncludeNode) Render(context *Context, writer io.Writer) error {
+	engineObj := context.Get("_engine")
 	if engineObj == nil {
 		return fmt.Errorf("PTE template engine not found in context")
 	}
 
-	// We can assert or dynamically call Render Named Template on the engine
-	// Let's use reflection or type assert if the type is accessible (yes, it is inside package pte!)
-	engine, ok := engineObj.(interface {
-		renderNamedTemplate(w io.Writer, name string, ctx *Context) error
+	engine, isEngine := engineObj.(interface {
+		renderNamedTemplate(writer io.Writer, name string, context *Context) error
 		createContextFromValue(value any) *Context
 	})
-	if !ok {
+	if !isEngine {
 		return fmt.Errorf("invalid template engine in context")
 	}
 
-	subContext := ctx
-	if n.ModelExpression != "" {
-		val, err := n.Evaluator.Evaluate(n.ModelExpression, ctx)
+	subContext := context
+	if node.ModelExpression != "" {
+		evaluatedModel, err := node.Evaluator.Evaluate(node.ModelExpression, context)
 		if err != nil {
 			return err
 		}
-		subContext = engine.createContextFromValue(val)
+		subContext = engine.createContextFromValue(evaluatedModel)
 		// Inherit local variables like macros and slots
-		for k, v := range ctx.localValues {
-			subContext.PushLocal(k, v)
+		for key, val := range context.localValues {
+			subContext.PushLocal(key, val)
 		}
 	}
 
-	return engine.renderNamedTemplate(w, n.TemplateName, subContext)
+	return engine.renderNamedTemplate(writer, node.TemplateName, subContext)
 }
 
 // YieldNode renders layouts yields
@@ -565,19 +563,19 @@ type YieldNode struct {
 	SectionName string
 }
 
-func (n *YieldNode) Render(ctx *Context, w io.Writer) error {
-	sectionsObj := ctx.Get("_sections")
+func (node *YieldNode) Render(context *Context, writer io.Writer) error {
+	sectionsObj := context.Get("_sections")
 	if sectionsObj == nil {
 		return fmt.Errorf("|yield| can only be used inside a layout template")
 	}
 
-	sections, ok := sectionsObj.(map[string]string)
-	if !ok {
+	sectionsMap, isMap := sectionsObj.(map[string]string)
+	if !isMap {
 		return fmt.Errorf("invalid layout sections in context")
 	}
 
-	val := sections[n.SectionName]
-	_, err := io.WriteString(w, val)
+	sectionContent := sectionsMap[node.SectionName]
+	_, err := io.WriteString(writer, sectionContent)
 	return err
 }
 
@@ -587,32 +585,32 @@ type ComponentNode struct {
 	Slots         map[string]Node
 }
 
-func (n *ComponentNode) Render(ctx *Context, w io.Writer) error {
-	engineObj := ctx.Get("_engine")
+func (node *ComponentNode) Render(context *Context, writer io.Writer) error {
+	engineObj := context.Get("_engine")
 	if engineObj == nil {
 		return fmt.Errorf("PTE template engine not found in context")
 	}
 
-	engine, ok := engineObj.(interface {
-		renderNamedTemplate(w io.Writer, name string, ctx *Context) error
+	engine, isEngine := engineObj.(interface {
+		renderNamedTemplate(writer io.Writer, name string, context *Context) error
 	})
-	if !ok {
+	if !isEngine {
 		return fmt.Errorf("invalid template engine in context")
 	}
 
 	// Evaluate slots to string buffers in component context
 	slotValues := make(map[string]string)
-	for slotName, slotBlock := range n.Slots {
-		var buf bytes.Buffer
-		if err := slotBlock.Render(ctx, &buf); err != nil {
+	for slotName, slotBlock := range node.Slots {
+		var buffer bytes.Buffer
+		if err := slotBlock.Render(context, &buffer); err != nil {
 			return err
 		}
-		slotValues[slotName] = buf.String()
+		slotValues[slotName] = buffer.String()
 	}
 
 	// Create subcontext for the component rendering, pushing slot values
-	subContext := ctx.With("_slots", slotValues)
-	return engine.renderNamedTemplate(w, n.ComponentName, subContext)
+	subContext := context.With("_slots", slotValues)
+	return engine.renderNamedTemplate(writer, node.ComponentName, subContext)
 }
 
 // SlotNode renders component slots
@@ -620,19 +618,19 @@ type SlotNode struct {
 	SlotName string
 }
 
-func (n *SlotNode) Render(ctx *Context, w io.Writer) error {
-	slotsObj := ctx.Get("_slots")
+func (node *SlotNode) Render(context *Context, writer io.Writer) error {
+	slotsObj := context.Get("_slots")
 	if slotsObj == nil {
 		return fmt.Errorf("|slot| can only be rendered inside a component template")
 	}
 
-	slots, ok := slotsObj.(map[string]string)
-	if !ok {
+	slotsMap, isMap := slotsObj.(map[string]string)
+	if !isMap {
 		return fmt.Errorf("invalid component slots in context")
 	}
 
-	val := slots[n.SlotName]
-	_, err := io.WriteString(w, val)
+	slotContent := slotsMap[node.SlotName]
+	_, err := io.WriteString(writer, slotContent)
 	return err
 }
 
@@ -643,8 +641,8 @@ type MacroNode struct {
 	Body       Node
 }
 
-func (n *MacroNode) Render(ctx *Context, w io.Writer) error {
-	ctx.PushLocal("_macro_"+n.Name, n)
+func (node *MacroNode) Render(context *Context, writer io.Writer) error {
+	context.PushLocal("_macro_"+node.Name, node)
 	return nil
 }
 
@@ -655,35 +653,35 @@ type CallNode struct {
 	Evaluator           *Evaluator
 }
 
-func (n *CallNode) Render(ctx *Context, w io.Writer) error {
-	macroObj := ctx.Get("_macro_" + n.MacroName)
+func (node *CallNode) Render(context *Context, writer io.Writer) error {
+	macroObj := context.Get("_macro_" + node.MacroName)
 	if macroObj == nil {
-		return fmt.Errorf("undefined macro %q", n.MacroName)
+		return fmt.Errorf("undefined macro %q", node.MacroName)
 	}
 
-	macroNode, ok := macroObj.(*MacroNode)
-	if !ok {
-		return fmt.Errorf("invalid macro %q in context", n.MacroName)
+	macroNode, isMacro := macroObj.(*MacroNode)
+	if !isMacro {
+		return fmt.Errorf("invalid macro %q in context", node.MacroName)
 	}
 
 	macroScope := make(map[string]any)
-	for i, paramName := range macroNode.Parameters {
-		var argVal any
-		if i < len(n.ArgumentExpressions) {
+	for paramIndex, paramName := range macroNode.Parameters {
+		var argumentValue any
+		if paramIndex < len(node.ArgumentExpressions) {
 			var err error
-			argVal, err = n.Evaluator.Evaluate(n.ArgumentExpressions[i], ctx)
+			argumentValue, err = node.Evaluator.Evaluate(node.ArgumentExpressions[paramIndex], context)
 			if err != nil {
 				return err
 			}
 		}
-		if argVal == nil {
-			argVal = ""
+		if argumentValue == nil {
+			argumentValue = ""
 		}
-		macroScope[paramName] = argVal
+		macroScope[paramName] = argumentValue
 	}
 
-	subContext := ctx.SubContext(macroScope)
-	return macroNode.Body.Render(subContext, w)
+	subContext := context.SubContext(macroScope)
+	return macroNode.Body.Render(subContext, writer)
 }
 
 // SeparatorNode renders loop separators
@@ -691,8 +689,8 @@ type SeparatorNode struct {
 	Body Node
 }
 
-func (n *SeparatorNode) Render(ctx *Context, w io.Writer) error {
-	return n.Body.Render(ctx, w)
+func (node *SeparatorNode) Render(context *Context, writer io.Writer) error {
+	return node.Body.Render(context, writer)
 }
 
 // FragmentNode encapsulates fragment bounds
@@ -701,8 +699,8 @@ type FragmentNode struct {
 	Body Node
 }
 
-func (n *FragmentNode) Render(ctx *Context, w io.Writer) error {
-	return n.Body.Render(ctx, w)
+func (node *FragmentNode) Render(context *Context, writer io.Writer) error {
+	return node.Body.Render(context, writer)
 }
 
 // MinifyNode minifies raw HTML inside its scope
@@ -710,12 +708,12 @@ type MinifyNode struct {
 	Body Node
 }
 
-func (n *MinifyNode) Render(ctx *Context, w io.Writer) error {
-	var buf bytes.Buffer
-	if err := n.Body.Render(ctx, &buf); err != nil {
+func (node *MinifyNode) Render(context *Context, writer io.Writer) error {
+	var buffer bytes.Buffer
+	if err := node.Body.Render(context, &buffer); err != nil {
 		return err
 	}
-	_, err := io.WriteString(w, MinifyHTML(buf.String()))
+	_, err := io.WriteString(writer, MinifyHTML(buffer.String()))
 	return err
 }
 
@@ -724,7 +722,7 @@ type ModelNode struct {
 	ModelType string
 }
 
-func (n *ModelNode) Render(ctx *Context, w io.Writer) error {
+func (node *ModelNode) Render(context *Context, writer io.Writer) error {
 	return nil // type declaration, renders nothing
 }
 
@@ -734,42 +732,42 @@ type FieldNode struct {
 	Evaluator    *Evaluator
 }
 
-func (n *FieldNode) Render(ctx *Context, w io.Writer) error {
-	name := deriveFieldName(n.PropertyPath)
-	rawVal, err := n.Evaluator.Evaluate(n.PropertyPath, ctx)
+func (node *FieldNode) Render(context *Context, writer io.Writer) error {
+	name := deriveFieldName(node.PropertyPath)
+	rawValue, err := node.Evaluator.Evaluate(node.PropertyPath, context)
 	if err != nil {
 		return err
 	}
 
-	valStr := ""
-	if rawVal != nil {
-		valStr = fmt.Sprintf("%v", rawVal)
+	valueString := ""
+	if rawValue != nil {
+		valueString = fmt.Sprintf("%v", rawValue)
 	}
 
 	escapedName := attributeEscape(name)
-	escapedVal := attributeEscape(valStr)
+	escapedVal := attributeEscape(valueString)
 
 	output := fmt.Sprintf(`name="%s" id="%s" value="%s"`, escapedName, escapedName, escapedVal)
 
-	errorsObj := ctx.Get("errors")
+	errorsObj := context.Get("errors")
 	if errorsObj != nil {
-		if errorsMap, ok := errorsObj.(map[string]any); ok && errorsMap[name] != nil {
+		if errorsMap, isMap := errorsObj.(map[string]any); isMap && errorsMap[name] != nil {
 			output += ` class="input is-danger"`
-		} else if errorsMap, ok := errorsObj.(map[string]string); ok && errorsMap[name] != "" {
+		} else if errorsMap, isMap := errorsObj.(map[string]string); isMap && errorsMap[name] != "" {
 			output += ` class="input is-danger"`
 		}
 	}
 
-	_, err = io.WriteString(w, output)
+	_, err = io.WriteString(writer, output)
 	return err
 }
 
 func deriveFieldName(path string) string {
-	idx := strings.LastIndexByte(path, '.')
-	if idx == -1 {
+	dotIndex := strings.LastIndexByte(path, '.')
+	if dotIndex == -1 {
 		return path
 	}
-	return path[idx+1:]
+	return path[dotIndex+1:]
 }
 
 // DisplayNode renders unescaped model output
@@ -778,13 +776,13 @@ type DisplayNode struct {
 	Evaluator    *Evaluator
 }
 
-func (n *DisplayNode) Render(ctx *Context, w io.Writer) error {
-	rawVal, err := n.Evaluator.Evaluate(n.PropertyPath, ctx)
+func (node *DisplayNode) Render(context *Context, writer io.Writer) error {
+	rawValue, err := node.Evaluator.Evaluate(node.PropertyPath, context)
 	if err != nil {
 		return err
 	}
-	if rawVal != nil {
-		_, err = io.WriteString(w, fmt.Sprintf("%v", rawVal))
+	if rawValue != nil {
+		_, err = io.WriteString(writer, fmt.Sprintf("%v", rawValue))
 		return err
 	}
 	return nil
@@ -796,23 +794,23 @@ type EditorNode struct {
 	Evaluator    *Evaluator
 }
 
-func (n *EditorNode) Render(ctx *Context, w io.Writer) error {
-	name := deriveFieldName(n.PropertyPath)
-	rawVal, err := n.Evaluator.Evaluate(n.PropertyPath, ctx)
+func (node *EditorNode) Render(context *Context, writer io.Writer) error {
+	name := deriveFieldName(node.PropertyPath)
+	rawValue, err := node.Evaluator.Evaluate(node.PropertyPath, context)
 	if err != nil {
 		return err
 	}
 
-	valStr := ""
-	if rawVal != nil {
-		valStr = fmt.Sprintf("%v", rawVal)
+	valueString := ""
+	if rawValue != nil {
+		valueString = fmt.Sprintf("%v", rawValue)
 	}
 
 	escapedName := attributeEscape(name)
-	escapedVal := attributeEscape(valStr)
+	escapedVal := attributeEscape(valueString)
 
 	inputHtml := fmt.Sprintf(`<input type="text" name="%s" id="%s" value="%s" class="input">`, escapedName, escapedName, escapedVal)
-	_, err = io.WriteString(w, inputHtml)
+	_, err = io.WriteString(writer, inputHtml)
 	return err
 }
 
@@ -823,38 +821,38 @@ type AttemptNode struct {
 	ErrorVarName string
 }
 
-func (n *AttemptNode) Render(ctx *Context, w io.Writer) error {
-	var buf bytes.Buffer
-	var err error
+func (node *AttemptNode) Render(context *Context, writer io.Writer) error {
+	var buffer bytes.Buffer
+	var renderError error
 
 	func() {
 		defer func() {
-			if r := recover(); r != nil {
-				if pErr, ok := r.(error); ok {
-					err = pErr
+			if recoveredPanic := recover(); recoveredPanic != nil {
+				if panicErr, isError := recoveredPanic.(error); isError {
+					renderError = panicErr
 				} else {
-					err = fmt.Errorf("%v", r)
+					renderError = fmt.Errorf("%v", recoveredPanic)
 				}
 			}
 		}()
-		err = n.Body.Render(ctx, &buf)
+		renderError = node.Body.Render(context, &buffer)
 	}()
 
-	if err != nil {
-		if errors.Is(err, errBreak) || errors.Is(err, errContinue) {
-			return err
+	if renderError != nil {
+		if errors.Is(renderError, errBreak) || errors.Is(renderError, errContinue) {
+			return renderError
 		}
-		if n.RecoverBlock != nil {
-			nextContext := ctx
-			if n.ErrorVarName != "" {
-				nextContext = ctx.With(n.ErrorVarName, err.Error())
+		if node.RecoverBlock != nil {
+			nextContext := context
+			if node.ErrorVarName != "" {
+				nextContext = context.With(node.ErrorVarName, renderError.Error())
 			}
-			return n.RecoverBlock.Render(nextContext, w)
+			return node.RecoverBlock.Render(nextContext, writer)
 		}
 		return nil
 	}
 
-	_, writeErr := w.Write(buf.Bytes())
+	_, writeErr := writer.Write(buffer.Bytes())
 	return writeErr
 }
 
@@ -871,41 +869,41 @@ type ForNode struct {
 	Position      int
 }
 
-func (n *ForNode) Render(ctx *Context, w io.Writer) error {
-	startVal, err := evaluateInt(n.Evaluator, n.StartExpr, ctx)
+func (node *ForNode) Render(context *Context, writer io.Writer) error {
+	startVal, err := evaluateInt(node.Evaluator, node.StartExpr, context)
 	if err != nil {
-		return fmt.Errorf("invalid start expression in for loop at %d: %w", n.Position, err)
+		return fmt.Errorf("invalid start expression in for loop at %d: %w", node.Position, err)
 	}
-	endVal, err := evaluateInt(n.Evaluator, n.EndExpr, ctx)
+	endVal, err := evaluateInt(node.Evaluator, node.EndExpr, context)
 	if err != nil {
-		return fmt.Errorf("invalid end expression in for loop at %d: %w", n.Position, err)
+		return fmt.Errorf("invalid end expression in for loop at %d: %w", node.Position, err)
 	}
 	stepVal := int64(1)
-	if n.StepExpr != "" {
-		stepVal, err = evaluateInt(n.Evaluator, n.StepExpr, ctx)
+	if node.StepExpr != "" {
+		stepVal, err = evaluateInt(node.Evaluator, node.StepExpr, context)
 		if err != nil {
-			return fmt.Errorf("invalid step expression in for loop at %d: %w", n.Position, err)
+			return fmt.Errorf("invalid step expression in for loop at %d: %w", node.Position, err)
 		}
 	}
 
 	if stepVal <= 0 {
-		return fmt.Errorf("zero or negative step in for loop at %d: %d", n.Position, stepVal)
+		return fmt.Errorf("zero or negative step in for loop at %d: %d", node.Position, stepVal)
 	}
 
 	executedAtLeastOnce := false
 
 	if startVal <= endVal {
-		total := (endVal-startVal)/stepVal + 1
-		idx := int64(0)
-		for i := startVal; i <= endVal; i += stepVal {
+		totalSteps := (endVal-startVal)/stepVal + 1
+		stepIndex := int64(0)
+		for currentVal := startVal; currentVal <= endVal; currentVal += stepVal {
 			executedAtLeastOnce = true
-			isLast := (idx == total-1)
-			idx++
-			scope := map[string]any{
-				n.VarName: i,
+			isLastStep := (stepIndex == totalSteps-1)
+			stepIndex++
+			loopScope := map[string]any{
+				node.VarName: currentVal,
 			}
-			subContext := ctx.SubContext(scope)
-			err := n.BodyBlock.Render(subContext, w)
+			subContext := context.SubContext(loopScope)
+			err := node.BodyBlock.Render(subContext, writer)
 			if errors.Is(err, errBreak) {
 				break
 			}
@@ -916,8 +914,8 @@ func (n *ForNode) Render(ctx *Context, w io.Writer) error {
 				return err
 			}
 
-			if n.SeparatorNode != nil && !isLast {
-				if err := n.SeparatorNode.Render(subContext, w); err != nil {
+			if node.SeparatorNode != nil && !isLastStep {
+				if err := node.SeparatorNode.Render(subContext, writer); err != nil {
 					if errors.Is(err, errBreak) {
 						break
 					}
@@ -929,17 +927,17 @@ func (n *ForNode) Render(ctx *Context, w io.Writer) error {
 			}
 		}
 	} else {
-		total := (startVal-endVal)/stepVal + 1
-		idx := int64(0)
-		for i := startVal; i >= endVal; i -= stepVal {
+		totalSteps := (startVal-endVal)/stepVal + 1
+		stepIndex := int64(0)
+		for currentVal := startVal; currentVal >= endVal; currentVal -= stepVal {
 			executedAtLeastOnce = true
-			isLast := (idx == total-1)
-			idx++
-			scope := map[string]any{
-				n.VarName: i,
+			isLastStep := (stepIndex == totalSteps-1)
+			stepIndex++
+			loopScope := map[string]any{
+				node.VarName: currentVal,
 			}
-			subContext := ctx.SubContext(scope)
-			err := n.BodyBlock.Render(subContext, w)
+			subContext := context.SubContext(loopScope)
+			err := node.BodyBlock.Render(subContext, writer)
 			if errors.Is(err, errBreak) {
 				break
 			}
@@ -950,8 +948,8 @@ func (n *ForNode) Render(ctx *Context, w io.Writer) error {
 				return err
 			}
 
-			if n.SeparatorNode != nil && !isLast {
-				if err := n.SeparatorNode.Render(subContext, w); err != nil {
+			if node.SeparatorNode != nil && !isLastStep {
+				if err := node.SeparatorNode.Render(subContext, writer); err != nil {
 					if errors.Is(err, errBreak) {
 						break
 					}
@@ -964,32 +962,32 @@ func (n *ForNode) Render(ctx *Context, w io.Writer) error {
 		}
 	}
 
-	if !executedAtLeastOnce && n.ElseBlock != nil {
-		return n.ElseBlock.Render(ctx, w)
+	if !executedAtLeastOnce && node.ElseBlock != nil {
+		return node.ElseBlock.Render(context, writer)
 	}
 
 	return nil
 }
 
-func evaluateInt(evaluator *Evaluator, expr string, ctx *Context) (int64, error) {
-	val, err := evaluator.Evaluate(expr, ctx)
+func evaluateInt(evaluator *Evaluator, expression string, context *Context) (int64, error) {
+	evaluatedVal, err := evaluator.Evaluate(expression, context)
 	if err != nil {
 		return 0, err
 	}
-	if val == nil {
-		return 0, fmt.Errorf("expression %q evaluated to null", expr)
+	if evaluatedVal == nil {
+		return 0, fmt.Errorf("expression %q evaluated to null", expression)
 	}
-	num, isNum := toFloat64(val)
+	num, isNum := toFloat64(evaluatedVal)
 	if !isNum {
-		if s, ok := val.(string); ok {
-			if i, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
-				return i, nil
+		if strVal, isString := evaluatedVal.(string); isString {
+			if parsedInt, err := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); err == nil {
+				return parsedInt, nil
 			}
-			if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
-				return int64(f), nil
+			if parsedFloat, err := strconv.ParseFloat(strings.TrimSpace(strVal), 64); err == nil {
+				return int64(parsedFloat), nil
 			}
 		}
-		return 0, fmt.Errorf("expression %q did not evaluate to an integer", expr)
+		return 0, fmt.Errorf("expression %q did not evaluate to an integer", expression)
 	}
 	return int64(num), nil
 }
@@ -999,7 +997,7 @@ type ContinueNode struct {
 	Position int
 }
 
-func (n *ContinueNode) Render(ctx *Context, w io.Writer) error {
+func (node *ContinueNode) Render(context *Context, writer io.Writer) error {
 	return errContinue
 }
 
@@ -1008,7 +1006,7 @@ type BreakNode struct {
 	Position int
 }
 
-func (n *BreakNode) Render(ctx *Context, w io.Writer) error {
+func (node *BreakNode) Render(context *Context, writer io.Writer) error {
 	return errBreak
 }
 
@@ -1022,47 +1020,47 @@ type PWANode struct {
 	StatusColor string
 }
 
-func (n *PWANode) Render(ctx *Context, w io.Writer) error {
-	manifest := n.Manifest
+func (node *PWANode) Render(context *Context, writer io.Writer) error {
+	manifest := node.Manifest
 	if manifest == "" {
 		manifest = "/manifest.json"
 	}
-	theme := n.Theme
+	theme := node.Theme
 	if theme == "" {
 		theme = "#000000"
 	}
-	statusColor := n.StatusColor
+	statusColor := node.StatusColor
 	if statusColor == "" {
 		statusColor = "default"
 	}
 
-	var tags []string
-	tags = append(tags, `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">`)
-	tags = append(tags, fmt.Sprintf(`<meta name="theme-color" content="%s">`, htmlEscape(theme)))
-	tags = append(tags, `<meta name="mobile-web-app-capable" content="yes">`)
-	tags = append(tags, `<meta name="apple-mobile-web-app-capable" content="yes">`)
-	tags = append(tags, fmt.Sprintf(`<meta name="apple-mobile-web-app-status-bar-style" content="%s">`, htmlEscape(statusColor)))
+	var metaTags []string
+	metaTags = append(metaTags, `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">`)
+	metaTags = append(metaTags, fmt.Sprintf(`<meta name="theme-color" content="%s">`, htmlEscape(theme)))
+	metaTags = append(metaTags, `<meta name="mobile-web-app-capable" content="yes">`)
+	metaTags = append(metaTags, `<meta name="apple-mobile-web-app-capable" content="yes">`)
+	metaTags = append(metaTags, fmt.Sprintf(`<meta name="apple-mobile-web-app-status-bar-style" content="%s">`, htmlEscape(statusColor)))
 
-	if n.Name != "" {
-		tags = append(tags, fmt.Sprintf(`<meta name="apple-mobile-web-app-title" content="%s">`, htmlEscape(n.Name)))
-		tags = append(tags, fmt.Sprintf(`<meta name="application-name" content="%s">`, htmlEscape(n.Name)))
+	if node.Name != "" {
+		metaTags = append(metaTags, fmt.Sprintf(`<meta name="apple-mobile-web-app-title" content="%s">`, htmlEscape(node.Name)))
+		metaTags = append(metaTags, fmt.Sprintf(`<meta name="application-name" content="%s">`, htmlEscape(node.Name)))
 	}
 
-	if n.Manifest != "none" && n.Manifest != "false" {
-		tags = append(tags, fmt.Sprintf(`<link rel="manifest" href="%s">`, htmlEscape(manifest)))
+	if node.Manifest != "none" && node.Manifest != "false" {
+		metaTags = append(metaTags, fmt.Sprintf(`<link rel="manifest" href="%s">`, htmlEscape(manifest)))
 	}
 
-	if n.Icon != "" && n.Icon != "none" && n.Icon != "false" {
-		tags = append(tags, fmt.Sprintf(`<link rel="apple-touch-icon" href="%s">`, htmlEscape(n.Icon)))
-		tags = append(tags, fmt.Sprintf(`<link rel="icon" href="%s">`, htmlEscape(n.Icon)))
+	if node.Icon != "" && node.Icon != "none" && node.Icon != "false" {
+		metaTags = append(metaTags, fmt.Sprintf(`<link rel="apple-touch-icon" href="%s">`, htmlEscape(node.Icon)))
+		metaTags = append(metaTags, fmt.Sprintf(`<link rel="icon" href="%s">`, htmlEscape(node.Icon)))
 	}
 
-	if n.SW != "" && n.SW != "none" && n.SW != "false" {
-		tags = append(tags, fmt.Sprintf(`<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('%s');});}</script>`, htmlEscape(n.SW)))
+	if node.SW != "" && node.SW != "none" && node.SW != "false" {
+		metaTags = append(metaTags, fmt.Sprintf(`<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('%s');});}</script>`, htmlEscape(node.SW)))
 	}
 
-	output := strings.Join(tags, "\n")
-	_, err := io.WriteString(w, output)
+	output := strings.Join(metaTags, "\n")
+	_, err := io.WriteString(writer, output)
 	return err
 }
 
@@ -1074,33 +1072,33 @@ type HTMXNode struct {
 	Indicator  bool
 }
 
-func (n *HTMXNode) Render(ctx *Context, w io.Writer) error {
-	src := n.Src
+func (node *HTMXNode) Render(context *Context, writer io.Writer) error {
+	src := node.Src
 	if src == "" {
 		src = "https://unpkg.com/htmx.org@1.9.10"
 	}
 
-	var tags []string
-	if n.Config != "" {
-		tags = append(tags, fmt.Sprintf(`<meta name="htmx-config" content="%s">`, htmlEscape(n.Config)))
+	var scriptTags []string
+	if node.Config != "" {
+		scriptTags = append(scriptTags, fmt.Sprintf(`<meta name="htmx-config" content="%s">`, htmlEscape(node.Config)))
 	}
 
-	tags = append(tags, fmt.Sprintf(`<script src="%s"></script>`, htmlEscape(src)))
+	scriptTags = append(scriptTags, fmt.Sprintf(`<script src="%s"></script>`, htmlEscape(src)))
 
-	for _, ext := range n.Extensions {
-		extName := strings.TrimSpace(ext)
-		if extName != "" {
-			extUrl := fmt.Sprintf("https://unpkg.com/htmx.org@1.9.10/dist/ext/%s.js", htmlEscape(extName))
-			tags = append(tags, fmt.Sprintf(`<script src="%s"></script>`, extUrl))
+	for _, extensionName := range node.Extensions {
+		trimmedExtName := strings.TrimSpace(extensionName)
+		if trimmedExtName != "" {
+			extensionURL := fmt.Sprintf("https://unpkg.com/htmx.org@1.9.10/dist/ext/%s.js", htmlEscape(trimmedExtName))
+			scriptTags = append(scriptTags, fmt.Sprintf(`<script src="%s"></script>`, extensionURL))
 		}
 	}
 
-	if n.Indicator {
-		tags = append(tags, `<style>.htmx-indicator{display:none;}.htmx-request .htmx-indicator,.htmx-request.htmx-indicator{display:inline-block;}</style>`)
+	if node.Indicator {
+		scriptTags = append(scriptTags, `<style>.htmx-indicator{display:none;}.htmx-request .htmx-indicator,.htmx-request.htmx-indicator{display:inline-block;}</style>`)
 	}
 
-	output := strings.Join(tags, "\n")
-	_, err := io.WriteString(w, output)
+	output := strings.Join(scriptTags, "\n")
+	_, err := io.WriteString(writer, output)
 	return err
 }
 
@@ -1114,26 +1112,26 @@ type HXAttrNode struct {
 	Trigger   string
 }
 
-func (n *HXAttrNode) Render(ctx *Context, w io.Writer) error {
-	var attrs []string
-	if n.Method != "" && n.URL != "" {
-		attrs = append(attrs, fmt.Sprintf(`hx-%s="%s"`, n.Method, htmlEscape(n.URL)))
+func (node *HXAttrNode) Render(context *Context, writer io.Writer) error {
+	var attributeStrings []string
+	if node.Method != "" && node.URL != "" {
+		attributeStrings = append(attributeStrings, fmt.Sprintf(`hx-%s="%s"`, node.Method, htmlEscape(node.URL)))
 	}
-	if n.Target != "" {
-		attrs = append(attrs, fmt.Sprintf(`hx-target="%s"`, htmlEscape(n.Target)))
+	if node.Target != "" {
+		attributeStrings = append(attributeStrings, fmt.Sprintf(`hx-target="%s"`, htmlEscape(node.Target)))
 	}
-	if n.Swap != "" {
-		attrs = append(attrs, fmt.Sprintf(`hx-swap="%s"`, htmlEscape(n.Swap)))
+	if node.Swap != "" {
+		attributeStrings = append(attributeStrings, fmt.Sprintf(`hx-swap="%s"`, htmlEscape(node.Swap)))
 	}
-	if n.Indicator != "" {
-		attrs = append(attrs, fmt.Sprintf(`hx-indicator="%s"`, htmlEscape(n.Indicator)))
+	if node.Indicator != "" {
+		attributeStrings = append(attributeStrings, fmt.Sprintf(`hx-indicator="%s"`, htmlEscape(node.Indicator)))
 	}
-	if n.Trigger != "" {
-		attrs = append(attrs, fmt.Sprintf(`hx-trigger="%s"`, htmlEscape(n.Trigger)))
+	if node.Trigger != "" {
+		attributeStrings = append(attributeStrings, fmt.Sprintf(`hx-trigger="%s"`, htmlEscape(node.Trigger)))
 	}
 
-	output := strings.Join(attrs, " ")
-	_, err := io.WriteString(w, output)
+	output := strings.Join(attributeStrings, " ")
+	_, err := io.WriteString(writer, output)
 	return err
 }
 
