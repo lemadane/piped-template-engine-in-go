@@ -35,8 +35,8 @@ import (
 func main() {
 	engine := pte.NewEngine("./templates")
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.HandleFunc("/", func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Content-Type", "text/html; charset=utf-8")
 		
 		data := map[string]any{
 			"title": "Dashboard",
@@ -45,7 +45,7 @@ func main() {
 
 		// Compile and stream output concurrently via standard io.Pipe
 		reader := engine.RenderStream("pages/home", data)
-		_, _ = io.Copy(w, reader)
+		_, _ = io.Copy(responseWriter, reader)
 	})
 
 	http.ListenAndServe(":8080", nil)
@@ -65,12 +65,12 @@ func main() {
 	app := fiber.New()
 	engine := pte.NewEngine("./templates")
 
-	app.Get("/", func(c *fiber.Ctx) error {
-		c.Set("Content-Type", "text/html; charset=utf-8")
+	app.Get("/", func(fiberContext *fiber.Ctx) error {
+		fiberContext.Set("Content-Type", "text/html; charset=utf-8")
 		data := map[string]any{"message": "Hello from Fiber!"}
 		
 		// Write directly to Fiber context's response stream
-		return engine.Render(c.Response().BodyWriter(), "pages/index", data)
+		return engine.Render(fiberContext.Response().BodyWriter(), "pages/index", data)
 	})
 
 	app.Listen(":8080")
@@ -88,20 +88,20 @@ import (
 )
 
 func main() {
-	r := gin.Default()
+	ginRouter := gin.Default()
 	engine := pte.NewEngine("./templates")
 
-	r.GET("/", func(c *gin.Context) {
-		c.Header("Content-Type", "text/html; charset=utf-8")
+	ginRouter.GET("/", func(ginContext *gin.Context) {
+		ginContext.Header("Content-Type", "text/html; charset=utf-8")
 		data := map[string]any{"message": "Hello from Gin!"}
 		
-		err := engine.Render(c.Writer, "pages/index", data)
-		if err != nil {
-			c.String(http.StatusInternalServerError, err.Error())
+		renderError := engine.Render(ginContext.Writer, "pages/index", data)
+		if renderError != nil {
+			ginContext.String(http.StatusInternalServerError, renderError.Error())
 		}
 	})
 
-	r.Run(":8080")
+	ginRouter.Run(":8080")
 }
 ```
 
@@ -115,16 +115,16 @@ import (
 )
 
 func main() {
-	e := echo.New()
+	echoApp := echo.New()
 	engine := pte.NewEngine("./templates")
 
-	e.GET("/", func(c echo.Context) error {
-		c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+	echoApp.GET("/", func(echoContext echo.Context) error {
+		echoContext.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 		data := map[string]any{"message": "Hello from Echo!"}
-		return engine.Render(c.Response().Writer, "pages/index", data)
+		return engine.Render(echoContext.Response().Writer, "pages/index", data)
 	})
 
-	e.Logger.Fatal(e.Start(":8080"))
+	echoApp.Logger.Fatal(echoApp.Start(":8080"))
 }
 ```
 
@@ -140,17 +140,17 @@ import (
 )
 
 func main() {
-	r := chi.NewRouter()
-	r.Use(middleware.Logger)
+	chiRouter := chi.NewRouter()
+	chiRouter.Use(middleware.Logger)
 	engine := pte.NewEngine("./templates")
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	chiRouter.Get("/", func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Content-Type", "text/html; charset=utf-8")
 		data := map[string]any{"message": "Hello from Chi!"}
-		_ = engine.Render(w, "pages/index", data)
+		_ = engine.Render(responseWriter, "pages/index", data)
 	})
 
-	http.ListenAndServe(":8080", r)
+	http.ListenAndServe(":8080", chiRouter)
 }
 ```
 
@@ -167,12 +167,12 @@ type MainController struct {
 	beego.Controller
 }
 
-func (c *MainController) Get() {
+func (controller *MainController) Get() {
 	engine := pte.NewEngine("./templates")
-	c.Ctx.Output.Header("Content-Type", "text/html; charset=utf-8")
+	controller.Ctx.Output.Header("Content-Type", "text/html; charset=utf-8")
 	data := map[string]any{"message": "Hello from Beego!"}
 	
-	_ = engine.Render(c.Ctx.ResponseWriter, "pages/index", data)
+	_ = engine.Render(controller.Ctx.ResponseWriter, "pages/index", data)
 }
 
 func main() {
@@ -194,11 +194,11 @@ func main() {
 	app := buffalo.New(buffalo.Options{})
 	engine := pte.NewEngine("./templates")
 
-	app.GET("/", func(c buffalo.Context) error {
-		c.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
+	app.GET("/", func(buffaloContext buffalo.Context) error {
+		buffaloContext.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
 		data := map[string]any{"message": "Hello from Buffalo!"}
 		
-		return engine.Render(c.Response(), "pages/index", data)
+		return engine.Render(buffaloContext.Response(), "pages/index", data)
 	})
 
 	app.Serve()
@@ -218,11 +218,11 @@ func main() {
 	app := iris.New()
 	engine := pte.NewEngine("./templates")
 
-	app.Get("/", func(ctx iris.Context) {
-		ctx.ContentType("text/html; charset=utf-8")
+	app.Get("/", func(irisContext iris.Context) {
+		irisContext.ContentType("text/html; charset=utf-8")
 		data := map[string]any{"message": "Hello from Iris!"}
 		
-		_ = engine.Render(ctx.ResponseWriter(), "pages/index", data)
+		_ = engine.Render(irisContext.ResponseWriter(), "pages/index", data)
 	})
 
 	app.Listen(":8080")
@@ -240,18 +240,18 @@ import (
 )
 
 func main() {
-	s := g.Server()
+	goFrameServer := g.Server()
 	engine := pte.NewEngine("./templates")
 
-	s.BindHandler("/", func(r *ghttp.Request) {
-		r.Response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	goFrameServer.BindHandler("/", func(request *ghttp.Request) {
+		request.Response.Header().Set("Content-Type", "text/html; charset=utf-8")
 		data := map[string]any{"message": "Hello from GoFrame!"}
 		
-		_ = engine.Render(r.Response.Writer, "pages/index", data)
+		_ = engine.Render(request.Response.Writer, "pages/index", data)
 	})
 
-	s.SetPort(8080)
-	s.Run()
+	goFrameServer.SetPort(8080)
+	goFrameServer.Run()
 }
 ```
 
@@ -287,7 +287,7 @@ func main() {
 	router, _ := pte.NewFileRouter(engine, "./pte-routes")
 
 	// Register data loaders to inject database maps into specific route contexts
-	router.RegisterDataLoader("/products/[id]", func(r *http.Request, params map[string]string) (map[string]any, error) {
+	router.RegisterDataLoader("/products/[id]", func(request *http.Request, params map[string]string) (map[string]any, error) {
 		id := params["id"]
 		return map[string]any{
 			"product": map[string]any{"id": id, "name": "Coffee Maker", "price": 89.99},
@@ -295,7 +295,7 @@ func main() {
 	})
 
 	// Optional Authentication Check hook mapping to |page auth=true roles='...'| metadata
-	router.AuthCheck = func(r *http.Request, requiredRoles []string) (bool, int, string) {
+	router.AuthCheck = func(request *http.Request, requiredRoles []string) (bool, int, string) {
 		// Enforce auth logic
 		return true, 0, ""
 	}
@@ -885,7 +885,7 @@ Target specific sub-regions inside a single `.pte` file. Use `RenderFragments` t
 
 ```go
 // Controller streams BOTH fragments in one HTTP response for HTMX OOB updates
-err := engine.RenderFragments(w, "pages/dashboard", []string{"toast", "cart-count"}, data)
+err := engine.RenderFragments(responseWriter, "pages/dashboard", []string{"toast", "cart-count"}, data)
 ```
 
 #### B. HTMX Request Detection (`page.IsHTMX`)
@@ -1318,11 +1318,11 @@ import (
 )
 
 //go:embed templates/*
-var templateFS embed.FS
+var templateFileSystem embed.FS
 
 func main() {
 	// Compiles and reads templates directly from binary memory
-	engine := pte.NewEngine("templates", pte.WithFS(templateFS))
+	engine := pte.NewEngine("templates", pte.WithFS(templateFileSystem))
 	_ = engine
 }
 ```
@@ -1338,15 +1338,15 @@ import (
 )
 
 //go:embed templates/* pte-routes/*
-var appFS embed.FS
+var applicationFileSystem embed.FS
 
 func main() {
-	engine := pte.NewEngine("templates", pte.WithFS(appFS))
+	engine := pte.NewEngine("templates", pte.WithFS(applicationFileSystem))
 	
 	// Scans and mounts file routes directly from the embedded binary filesystem
-	router, err := pte.NewFileRouterFS(engine, appFS, "pte-routes")
-	if err != nil {
-		panic(err)
+	router, routerError := pte.NewFileRouterFS(engine, applicationFileSystem, "pte-routes")
+	if routerError != nil {
+		panic(routerError)
 	}
 
 	http.ListenAndServe(":8080", router)
@@ -1363,7 +1363,7 @@ Set global engine behaviors or pass in-memory template maps:
 engine := pte.NewEngine(
 	"./templates",
 	pte.WithSuffix(".pte"),
-	pte.WithFS(appFS),                           // Embedded fs.FS templates
+	pte.WithFS(applicationFileSystem),            // Embedded fs.FS templates
 	pte.WithInMemoryTemplates(virtualTemplates), // Virtual memory map templates
 	pte.WithMinify(true),                        // Globally minify output
 	pte.WithPrettify(false),                     // Disable prettify formatting
