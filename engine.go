@@ -172,7 +172,7 @@ func (engine *Engine) RenderString(writer io.Writer, template string, values map
 	return err
 }
 
-func (engine *Engine) RenderFragment(writer io.Writer, templateOrTemplateName, fragmentName string, values map[string]any) error {
+func (engine *Engine) renderRawFragment(buffer *bytes.Buffer, templateOrTemplateName, fragmentName string, values map[string]any) error {
 	source, err := engine.loadTemplateSource(templateOrTemplateName)
 	if err != nil {
 		return err
@@ -191,8 +191,12 @@ func (engine *Engine) RenderFragment(writer io.Writer, templateOrTemplateName, f
 	context := NewContext(values)
 	context.PushLocal("_engine", engine)
 
+	return fragNode.Render(context, buffer)
+}
+
+func (engine *Engine) RenderFragment(writer io.Writer, templateOrTemplateName, fragmentName string, values map[string]any) error {
 	var buffer bytes.Buffer
-	if err := fragNode.Render(context, &buffer); err != nil {
+	if err := engine.renderRawFragment(&buffer, templateOrTemplateName, fragmentName, values); err != nil {
 		return err
 	}
 
@@ -203,7 +207,7 @@ func (engine *Engine) RenderFragment(writer io.Writer, templateOrTemplateName, f
 		result = PrettifyHTML(result)
 	}
 
-	_, err = io.WriteString(writer, result)
+	_, err := io.WriteString(writer, result)
 	return err
 }
 
@@ -237,13 +241,21 @@ func (engine *Engine) RenderFragmentStream(name, fragment string, data map[strin
 }
 
 func (engine *Engine) RenderFragments(writer io.Writer, name string, fragmentNames []string, data map[string]any) error {
-	var buffer bytes.Buffer
+	var combinedBuffer bytes.Buffer
 	for _, fragName := range fragmentNames {
-		if err := engine.RenderFragment(&buffer, name, fragName, data); err != nil {
+		if err := engine.renderRawFragment(&combinedBuffer, name, fragName, data); err != nil {
 			return err
 		}
 	}
-	_, err := io.WriteString(writer, buffer.String())
+
+	result := combinedBuffer.String()
+	if engine.minify {
+		result = MinifyHTML(result)
+	} else if engine.prettify {
+		result = PrettifyHTML(result)
+	}
+
+	_, err := io.WriteString(writer, result)
 	return err
 }
 

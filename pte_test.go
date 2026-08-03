@@ -3,7 +3,9 @@ package pte
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2118,4 +2120,657 @@ func (panicModelObj) Explode() string {
 type structWithUnexported struct {
 	unexported string
 	Exported   string
+}
+
+// Extensive Regression Test Suites for Issues #6 through #10
+
+type NamedString string
+type NamedInt int
+type NamedUint uint64
+
+func TestIssue6MapKeyTypeSuite(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("Named string key type reproduction", func(t *testing.T) {
+		data := map[string]any{
+			"values": map[NamedString]string{"answer": "42"},
+		}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|values.answer|", data); err != nil {
+			t.Fatalf("unexpected error rendering named string map key: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "42" {
+			t.Errorf("expected '42', got %q", got)
+		}
+	})
+
+	t.Run("Table of map key types", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			template string
+			data     map[string]any
+			want     string
+		}{
+			{
+				name:     "map[string]string existing",
+				template: "|m.hello|",
+				data:     map[string]any{"m": map[string]string{"hello": "world"}},
+				want:     "world",
+			},
+			{
+				name:     "map[int]string existing",
+				template: "|m.100|",
+				data:     map[string]any{"m": map[int]string{100: "century"}},
+				want:     "century",
+			},
+			{
+				name:     "map[NamedInt]string existing",
+				template: "|m.42|",
+				data:     map[string]any{"m": map[NamedInt]string{42: "meaning"}},
+				want:     "meaning",
+			},
+			{
+				name:     "map[uint]string existing",
+				template: "|m.7|",
+				data:     map[string]any{"m": map[uint]string{7: "lucky"}},
+				want:     "lucky",
+			},
+			{
+				name:     "map[uintptr]string existing",
+				template: "|m.123|",
+				data:     map[string]any{"m": map[uintptr]string{123: "ptr"}},
+				want:     "ptr",
+			},
+			{
+				name:     "map[NamedUint]string existing",
+				template: "|m.99|",
+				data:     map[string]any{"m": map[NamedUint]string{99: "balloons"}},
+				want:     "balloons",
+			},
+			{
+				name:     "map[bool]string unsupported key falls back safely",
+				template: "|m.true|",
+				data:     map[string]any{"m": map[bool]string{true: "yes"}},
+				want:     "",
+			},
+			{
+				name:     "map[struct]string unsupported key falls back safely",
+				template: "|m.key|",
+				data:     map[string]any{"m": map[struct{ ID int }]string{{ID: 1}: "structKey"}},
+				want:     "",
+			},
+			{
+				name:     "missing integer key",
+				template: "|m.999|",
+				data:     map[string]any{"m": map[int]string{1: "one"}},
+				want:     "",
+			},
+			{
+				name:     "invalid numeric key string",
+				template: "|m.abc|",
+				data:     map[string]any{"m": map[int]string{1: "one"}},
+				want:     "",
+			},
+			{
+				name:     "numeric overflow for int8 key",
+				template: "|m.99999999999999999999999|",
+				data:     map[string]any{"m": map[int8]string{1: "one"}},
+				want:     "",
+			},
+			{
+				name:     "optional chaining on missing map key",
+				template: "|m?.missing|",
+				data:     map[string]any{"m": map[NamedString]string{"k": "v"}},
+				want:     "",
+			},
+			{
+				name:     "pointer to map",
+				template: "|ptr.answer|",
+				data:     map[string]any{"ptr": &map[NamedString]string{"answer": "42"}},
+				want:     "42",
+			},
+			{
+				name:     "map behind interface",
+				template: "|inter.answer|",
+				data:     map[string]any{"inter": any(map[NamedString]string{"answer": "42"})},
+				want:     "42",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var buf bytes.Buffer
+				err := engine.RenderString(&buf, tt.template, tt.data)
+				if err != nil && tt.want != "" {
+					t.Fatalf("unexpected render error: %v", err)
+				}
+				if got := strings.TrimSpace(buf.String()); got != tt.want {
+					t.Errorf("expected %q, got %q", tt.want, got)
+				}
+			})
+		}
+	})
+
+	t.Run("Concurrent map key property access", func(t *testing.T) {
+		data := map[string]any{
+			"values": map[NamedString]string{"key": "val"},
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var buf bytes.Buffer
+				if err := engine.RenderString(&buf, "|values.key|", data); err != nil {
+					t.Errorf("concurrent render error: %v", err)
+				} else if got := strings.TrimSpace(buf.String()); got != "val" {
+					t.Errorf("expected 'val', got %q", got)
+				}
+			}()
+		}
+		wg.Wait()
+	})
+}
+
+type UserExported struct {
+	Name string
+}
+
+type UserUnexported struct {
+	Name       string
+	secretCode string
+}
+
+type UserWithGetter struct {
+	secretCode string
+}
+
+func (u UserWithGetter) GetSecretCode() string {
+	return u.secretCode
+}
+
+func (u UserWithGetter) FetchStatus() (string, error) {
+	return "Active", nil
+}
+
+func (u UserWithGetter) FailingGetter() (string, error) {
+	return "", errors.New("getter failed")
+}
+
+type EmbeddedPublic struct {
+	ID int
+}
+
+type embeddedPrivate struct {
+	Secret string
+}
+
+type OuterStruct struct {
+	EmbeddedPublic
+	embeddedPrivate
+}
+
+func TestIssue7StructFieldVisibilitySuite(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("Exported field", func(t *testing.T) {
+		user := UserExported{Name: "Lemuel"}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|user.Name|", map[string]any{"user": user}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "Lemuel" {
+			t.Errorf("expected 'Lemuel', got %q", got)
+		}
+	})
+
+	t.Run("Unexported field returns controlled error", func(t *testing.T) {
+		user := UserUnexported{Name: "Lemuel", secretCode: "pass123"}
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|user.secretCode|", map[string]any{"user": user})
+		if err == nil {
+			t.Fatalf("expected error accessing unexported field, got output %q", buf.String())
+		}
+		if strings.Contains(err.Error(), "pass123") {
+			t.Errorf("error message must not leak private field contents: %v", err)
+		}
+	})
+
+	t.Run("Optional chaining on unexported field renders empty", func(t *testing.T) {
+		user := UserUnexported{Name: "Lemuel", secretCode: "pass123"}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|user?.secretCode|", map[string]any{"user": user}); err != nil {
+			t.Fatalf("unexpected error with optional chaining: %v", err)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("Struct pointer and nil struct pointer", func(t *testing.T) {
+		user := &UserExported{Name: "Alice"}
+		var buf1 bytes.Buffer
+		if err := engine.RenderString(&buf1, "|user.Name|", map[string]any{"user": user}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf1.String()); got != "Alice" {
+			t.Errorf("expected 'Alice', got %q", got)
+		}
+
+		var nilUser *UserExported
+		var buf2 bytes.Buffer
+		if err := engine.RenderString(&buf2, "|user?.Name|", map[string]any{"user": nilUser}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf2.String(); got != "" {
+			t.Errorf("expected empty output for nil struct pointer optional chaining, got %q", got)
+		}
+	})
+
+	t.Run("Embedded exported vs unexported struct", func(t *testing.T) {
+		outer := OuterStruct{
+			EmbeddedPublic:  EmbeddedPublic{ID: 42},
+			embeddedPrivate: embeddedPrivate{Secret: "topsecret"},
+		}
+
+		var buf1 bytes.Buffer
+		if err := engine.RenderString(&buf1, "|outer.ID|", map[string]any{"outer": outer}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf1.String()); got != "42" {
+			t.Errorf("expected '42', got %q", got)
+		}
+
+		var buf2 bytes.Buffer
+		err := engine.RenderString(&buf2, "|outer.embeddedPrivate|", map[string]any{"outer": outer})
+		if err == nil {
+			t.Errorf("expected error accessing unexported embedded struct field, got %q", buf2.String())
+		}
+	})
+
+	t.Run("Unexported field with exported getter", func(t *testing.T) {
+		user := UserWithGetter{secretCode: "code99"}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|user.GetSecretCode|", map[string]any{"user": user}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "code99" {
+			t.Errorf("expected 'code99', got %q", got)
+		}
+	})
+
+	t.Run("Getter returning (value, error)", func(t *testing.T) {
+		user := UserWithGetter{}
+		var buf1 bytes.Buffer
+		if err := engine.RenderString(&buf1, "|user.FetchStatus|", map[string]any{"user": user}); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf1.String()); got != "Active" {
+			t.Errorf("expected 'Active', got %q", got)
+		}
+
+		var buf2 bytes.Buffer
+		err := engine.RenderString(&buf2, "|user.FailingGetter|", map[string]any{"user": user})
+		if err == nil || !strings.Contains(err.Error(), "getter failed") {
+			t.Errorf("expected 'getter failed' error, got %v", err)
+		}
+	})
+
+	t.Run("Attempt recovery around inaccessible property", func(t *testing.T) {
+		user := UserUnexported{secretCode: "hidden"}
+		tmpl := `|attempt||user.secretCode||recover as err|Recovered: |err||/attempt|`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, map[string]any{"user": user}); err != nil {
+			t.Fatalf("unexpected rendering error in attempt block: %v", err)
+		}
+		if !strings.Contains(buf.String(), "Recovered:") {
+			t.Errorf("expected attempt block to recover from property error, got %q", buf.String())
+		}
+	})
+
+	t.Run("Concurrent struct field visibility check", func(t *testing.T) {
+		user := UserExported{Name: "Concurrent"}
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var buf bytes.Buffer
+				if err := engine.RenderString(&buf, "|user.Name|", map[string]any{"user": user}); err != nil {
+					t.Errorf("concurrent struct access error: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+	})
+}
+
+func TestIssue8WithFSEmbeddedTemplateSuite(t *testing.T) {
+	memFS := fstest.MapFS{
+		"templates/home.pte": &fstest.MapFile{
+			Data: []byte("<h1>Embedded Home</h1>"),
+		},
+		"templates/pages/dashboard.pte": &fstest.MapFile{
+			Data: []byte("<div>Dashboard |title|</div>"),
+		},
+		"templates/layouts/base.pte": &fstest.MapFile{
+			Data: []byte("<main>|yield content|</main>"),
+		},
+		"templates/components/card.pte": &fstest.MapFile{
+			Data: []byte("<card>|slot body|</card>"),
+		},
+		"templates/inc.pte": &fstest.MapFile{
+			Data: []byte("<span>Included</span>"),
+		},
+		"templates/frag.pte": &fstest.MapFile{
+			Data: []byte("|fragment item|<div>FragItem</div>|/fragment|"),
+		},
+		"templates/custom.html": &fstest.MapFile{
+			Data: []byte("<p>Custom Suffix</p>"),
+		},
+	}
+
+	t.Run("Root-level and nested embedded templates", func(t *testing.T) {
+		engine := NewEngine("templates", WithFS(memFS))
+		var buf1 bytes.Buffer
+		if err := engine.Render(&buf1, "home", nil); err != nil {
+			t.Fatalf("failed to render home: %v", err)
+		}
+		if got := strings.TrimSpace(buf1.String()); got != "<h1>Embedded Home</h1>" {
+			t.Errorf("expected '<h1>Embedded Home</h1>', got %q", got)
+		}
+
+		var buf2 bytes.Buffer
+		if err := engine.Render(&buf2, "pages/dashboard", map[string]any{"title": "Stats"}); err != nil {
+			t.Fatalf("failed to render nested page: %v", err)
+		}
+		if got := strings.TrimSpace(buf2.String()); got != "<div>Dashboard Stats</div>" {
+			t.Errorf("expected '<div>Dashboard Stats</div>', got %q", got)
+		}
+	})
+
+	t.Run("Custom suffix WithSuffix", func(t *testing.T) {
+		engine := NewEngine("templates", WithFS(memFS), WithSuffix(".html"))
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, "custom", nil); err != nil {
+			t.Fatalf("failed to render custom suffix: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<p>Custom Suffix</p>" {
+			t.Errorf("expected '<p>Custom Suffix</p>', got %q", got)
+		}
+	})
+
+	t.Run("Embedded included, layout, component, and fragment", func(t *testing.T) {
+		engine := NewEngine("templates", WithFS(memFS))
+
+		// Include
+		var bufInc bytes.Buffer
+		if err := engine.RenderString(&bufInc, "|include inc|", nil); err != nil {
+			t.Fatalf("failed to render embedded include: %v", err)
+		}
+		if got := strings.TrimSpace(bufInc.String()); got != "<span>Included</span>" {
+			t.Errorf("expected '<span>Included</span>', got %q", got)
+		}
+
+		// Fragment
+		var bufFrag bytes.Buffer
+		if err := engine.RenderFragment(&bufFrag, "frag", "item", nil); err != nil {
+			t.Fatalf("failed to render embedded fragment: %v", err)
+		}
+		if got := strings.TrimSpace(bufFrag.String()); got != "<div>FragItem</div>" {
+			t.Errorf("expected '<div>FragItem</div>', got %q", got)
+		}
+	})
+
+	t.Run("fs.Sub usage", func(t *testing.T) {
+		subFS, err := fs.Sub(memFS, "templates")
+		if err != nil {
+			t.Fatalf("fs.Sub failed: %v", err)
+		}
+		engine := NewEngine(".", WithFS(subFS))
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, "home", nil); err != nil {
+			t.Fatalf("failed to render fs.Sub template: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<h1>Embedded Home</h1>" {
+			t.Errorf("expected '<h1>Embedded Home</h1>', got %q", got)
+		}
+	})
+
+	t.Run("Embedded path traversal rejection", func(t *testing.T) {
+		engine := NewEngine("templates", WithFS(memFS))
+		traversals := []string{"../secret", "/etc/passwd", "..\\secret"}
+		for _, target := range traversals {
+			var buf bytes.Buffer
+			err := engine.Render(&buf, target, nil)
+			if err == nil || !strings.Contains(err.Error(), "must not escape template root") {
+				t.Errorf("expected escape rejection for %q, got: %v", target, err)
+			}
+		}
+	})
+
+	t.Run("Precedence: In-memory > WithFS > Disk", func(t *testing.T) {
+		engine := NewEngine("templates", WithFS(memFS), WithInMemoryTemplates(map[string]string{
+			"home": "<h1>In-Memory Home</h1>",
+		}))
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, "home", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<h1>In-Memory Home</h1>" {
+			t.Errorf("in-memory template must override FS template, got %q", got)
+		}
+	})
+
+	t.Run("Concurrent embedded template rendering", func(t *testing.T) {
+		engine := NewEngine("templates", WithFS(memFS))
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var buf bytes.Buffer
+				if err := engine.Render(&buf, "home", nil); err != nil {
+					t.Errorf("concurrent embedded render error: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+	})
+}
+
+func TestIssue9RenderStringLiteralTextSuite(t *testing.T) {
+	engine := NewEngine("nonexistent-root")
+
+	t.Run("Literal text sources render without looking up disk template name", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			source string
+			values map[string]any
+			want   string
+		}{
+			{
+				name:   "empty source",
+				source: "",
+				want:   "",
+			},
+			{
+				name:   "plain words",
+				source: "Hello world",
+				want:   "Hello world",
+			},
+			{
+				name:   "plain text containing spaces",
+				source: "Plain text",
+				want:   "Plain text",
+			},
+			{
+				name:   "numbers",
+				source: "12345",
+				want:   "12345",
+			},
+			{
+				name:   "path-like string",
+				source: "/products",
+				want:   "/products",
+			},
+			{
+				name:   "HTML literal",
+				source: "<h1>Title</h1>",
+				want:   "<h1>Title</h1>",
+			},
+			{
+				name:   "expression evaluation",
+				source: "Hello |name|",
+				values: map[string]any{"name": "Lemuel"},
+				want:   "Hello Lemuel",
+			},
+			{
+				name:   "conditional",
+				source: "|if active|Active|else|Inactive|/if|",
+				values: map[string]any{"active": true},
+				want:   "Active",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var buf bytes.Buffer
+				if err := engine.RenderString(&buf, tt.source, tt.values); err != nil {
+					t.Fatalf("unexpected RenderString error: %v", err)
+				}
+				if got := buf.String(); got != tt.want {
+					t.Errorf("expected %q, got %q", tt.want, got)
+				}
+			})
+		}
+	})
+
+	t.Run("RenderStringStream literal text", func(t *testing.T) {
+		reader := engine.RenderStringStream("Stream |val|", map[string]any{"val": "OK"})
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("stream read error: %v", err)
+		}
+		if got := string(data); got != "Stream OK" {
+			t.Errorf("expected 'Stream OK', got %q", got)
+		}
+	})
+
+	t.Run("Contrast: Render treats path-like string as template name vs RenderString renders literally", func(t *testing.T) {
+		var bufRender bytes.Buffer
+		errRender := engine.Render(&bufRender, "pages/home", nil)
+		if errRender == nil {
+			t.Errorf("Render('pages/home') should attempt to load template file and return error for nonexistent root, got output %q", bufRender.String())
+		}
+
+		var bufString bytes.Buffer
+		errString := engine.RenderString(&bufString, "pages/home", nil)
+		if errString != nil {
+			t.Fatalf("RenderString('pages/home') must render literal string without error, got: %v", errString)
+		}
+		if got := bufString.String(); got != "pages/home" {
+			t.Errorf("expected literal 'pages/home', got %q", got)
+		}
+	})
+}
+
+func TestIssue10FragmentFormattingAndAtomicOutputSuite(t *testing.T) {
+	templates := map[string]string{
+		"frag_page": `
+|fragment head|  <head>   <title>PTE</title>   </head>  |/fragment|
+|fragment body|  <body>   <h1>Header</h1>   </body>  |/fragment|
+|fragment failing|  <div> |unknownVar.subProp| </div>  |/fragment|
+`,
+	}
+
+	t.Run("RenderFragment default, minify, and prettify formatting", func(t *testing.T) {
+		rawEng := NewEngine("", WithInMemoryTemplates(templates))
+		var bufRaw bytes.Buffer
+		if err := rawEng.RenderFragment(&bufRaw, "frag_page", "head", nil); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(bufRaw.String(), "<head>   <title>PTE</title>   </head>") {
+			t.Errorf("expected raw unformatted output, got %q", bufRaw.String())
+		}
+
+		minEng := NewEngine("", WithInMemoryTemplates(templates), WithMinify(true))
+		var bufMin bytes.Buffer
+		if err := minEng.RenderFragment(&bufMin, "frag_page", "head", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := bufMin.String(); got != "<head><title>PTE</title></head>" {
+			t.Errorf("expected minified output '<head><title>PTE</title></head>', got %q", got)
+		}
+
+		prettyEng := NewEngine("", WithInMemoryTemplates(templates), WithPrettify(true))
+		var bufPretty bytes.Buffer
+		if err := prettyEng.RenderFragment(&bufPretty, "frag_page", "head", nil); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(bufPretty.String(), "<head>") || !strings.Contains(bufPretty.String(), "<title>PTE") {
+			t.Errorf("expected prettified output, got %q", bufPretty.String())
+		}
+	})
+
+	t.Run("RenderFragments combined formatting once", func(t *testing.T) {
+		minEng := NewEngine("", WithInMemoryTemplates(templates), WithMinify(true))
+		var buf bytes.Buffer
+		if err := minEng.RenderFragments(&buf, "frag_page", []string{"head", "body"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "<head><title>PTE</title></head><body><h1>Header</h1></body>" {
+			t.Errorf("expected combined minified fragments, got %q", got)
+		}
+	})
+
+	t.Run("RenderFragments atomic output on failure", func(t *testing.T) {
+		rawEng := NewEngine("", WithInMemoryTemplates(templates))
+		var buf bytes.Buffer
+		err := rawEng.RenderFragments(&buf, "frag_page", []string{"head", "failing"}, nil)
+		if err == nil {
+			t.Fatal("expected error when rendering failing fragment")
+		}
+		if buf.Len() != 0 {
+			t.Errorf("caller writer must be 0 bytes on error (atomic output), got %d bytes: %q", buf.Len(), buf.String())
+		}
+	})
+
+	t.Run("Fragment streaming APIs", func(t *testing.T) {
+		minEng := NewEngine("", WithInMemoryTemplates(templates), WithMinify(true))
+
+		r1 := minEng.RenderFragmentStream("frag_page", "head", nil)
+		d1, err := io.ReadAll(r1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(d1); got != "<head><title>PTE</title></head>" {
+			t.Errorf("expected minified fragment stream output, got %q", got)
+		}
+
+		r2 := minEng.RenderFragmentsStream("frag_page", []string{"head", "body"}, nil)
+		d2, err := io.ReadAll(r2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(d2); got != "<head><title>PTE</title></head><body><h1>Header</h1></body>" {
+			t.Errorf("expected minified fragments stream output, got %q", got)
+		}
+	})
+
+	t.Run("Concurrent fragment rendering", func(t *testing.T) {
+		minEng := NewEngine("", WithInMemoryTemplates(templates), WithMinify(true))
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var buf bytes.Buffer
+				if err := minEng.RenderFragment(&buf, "frag_page", "head", nil); err != nil {
+					t.Errorf("concurrent fragment render error: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+	})
 }

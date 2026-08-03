@@ -1113,30 +1113,31 @@ func (evaluator *Evaluator) readProperty(source any, name string, optional bool)
 		var mapKey reflect.Value
 
 		if keyType.Kind() == reflect.String {
-			mapKey = reflect.ValueOf(name)
-		} else {
 			targetVal := reflect.New(keyType).Elem()
-			if keyType.Kind() >= reflect.Int && keyType.Kind() <= reflect.Int64 {
-				if parsedInt, err := strconv.ParseInt(name, 10, 64); err == nil && !targetVal.OverflowInt(parsedInt) {
-					targetVal.SetInt(parsedInt)
-					mapKey = targetVal
-				}
-			} else if keyType.Kind() >= reflect.Uint && keyType.Kind() <= reflect.Uint64 {
-				if parsedUint, err := strconv.ParseUint(name, 10, 64); err == nil && !targetVal.OverflowUint(parsedUint) {
-					targetVal.SetUint(parsedUint)
-					mapKey = targetVal
-				}
-			} else {
-				stringVal := reflect.ValueOf(name)
-				if stringVal.Type().AssignableTo(keyType) {
-					mapKey = stringVal
-				} else if stringVal.Type().ConvertibleTo(keyType) {
-					mapKey = stringVal.Convert(keyType)
-				}
+			targetVal.SetString(name)
+			mapKey = targetVal
+		} else if keyType.Kind() >= reflect.Int && keyType.Kind() <= reflect.Int64 {
+			targetVal := reflect.New(keyType).Elem()
+			if parsedInt, err := strconv.ParseInt(name, 10, 64); err == nil && !targetVal.OverflowInt(parsedInt) {
+				targetVal.SetInt(parsedInt)
+				mapKey = targetVal
+			}
+		} else if keyType.Kind() >= reflect.Uint && keyType.Kind() <= reflect.Uintptr {
+			targetVal := reflect.New(keyType).Elem()
+			if parsedUint, err := strconv.ParseUint(name, 10, 64); err == nil && !targetVal.OverflowUint(parsedUint) {
+				targetVal.SetUint(parsedUint)
+				mapKey = targetVal
+			}
+		} else {
+			stringVal := reflect.ValueOf(name)
+			if stringVal.Type().AssignableTo(keyType) {
+				mapKey = stringVal
+			} else if stringVal.Type().ConvertibleTo(keyType) {
+				mapKey = stringVal.Convert(keyType)
 			}
 		}
 
-		if mapKey.IsValid() {
+		if mapKey.IsValid() && mapKey.Type().AssignableTo(keyType) {
 			mapVal := reflectVal.MapIndex(mapKey)
 			if mapVal.IsValid() {
 				return mapVal.Interface(), nil
