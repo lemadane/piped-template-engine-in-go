@@ -1439,11 +1439,7 @@ func parseNumberValue(value any) (numberValue, bool) {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return numberValue{kind: numberKindUnsignedInt, uintVal: reflectVal.Uint()}, true
 	case reflect.Float32, reflect.Float64:
-		f := reflectVal.Float()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return numberValue{}, false
-		}
-		return numberValue{kind: numberKindFloat, floatVal: f}, true
+		return numberValue{kind: numberKindFloat, floatVal: reflectVal.Float()}, true
 	case reflect.String:
 		s := strings.TrimSpace(reflectVal.String())
 		if s == "" {
@@ -1458,9 +1454,6 @@ func parseNumberValue(value any) (numberValue, bool) {
 			}
 		}
 		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			if math.IsNaN(f) || math.IsInf(f, 0) {
-				return numberValue{}, false
-			}
 			return numberValue{kind: numberKindFloat, floatVal: f}, true
 		}
 	}
@@ -1616,6 +1609,30 @@ func compareNumbers(left, right numberValue, operator string) (bool, error) {
 }
 
 func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, operator string) (any, error) {
+	if (leftNum.kind == numberKindFloat && (math.IsNaN(leftNum.floatVal) || math.IsInf(leftNum.floatVal, 0))) ||
+		(rightNum.kind == numberKindFloat && (math.IsNaN(rightNum.floatVal) || math.IsInf(rightNum.floatVal, 0))) {
+		return nil, fmt.Errorf("arithmetic operation on non-finite number is not allowed")
+	}
+
+	if operator == "/" {
+		rf := rightNum.asFloat()
+		if rf == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+		res := leftNum.asFloat() / rf
+		if math.IsNaN(res) || math.IsInf(res, 0) {
+			return nil, fmt.Errorf("float arithmetic overflow")
+		}
+		if res == float64(int64(res)) {
+			return int64(res), nil
+		}
+		return res, nil
+	}
+
+	if operator == "%" {
+		return performModulo(leftNum, rightNum)
+	}
+
 	if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
 		leftBig := new(big.Int)
 		if leftNum.kind == numberKindSignedInt {
@@ -1639,13 +1656,6 @@ func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, op
 			resBig.Sub(leftBig, rightBig)
 		case "*":
 			resBig.Mul(leftBig, rightBig)
-		case "/":
-			if rightBig.Sign() == 0 {
-				return nil, fmt.Errorf("division by zero")
-			}
-			resBig.Quo(leftBig, rightBig)
-		case "%":
-			return performModulo(leftNum, rightNum)
 		default:
 			return nil, fmt.Errorf("unsupported operator: %s", operator)
 		}
@@ -1694,10 +1704,6 @@ func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, op
 	}
 
 	// Floating-point arithmetic
-	if math.IsNaN(leftNum.asFloat()) || math.IsNaN(rightNum.asFloat()) || math.IsInf(leftNum.asFloat(), 0) || math.IsInf(rightNum.asFloat(), 0) {
-		return nil, fmt.Errorf("invalid float operand")
-	}
-
 	switch operator {
 	case "+":
 		res := leftNum.asFloat() + rightNum.asFloat()
@@ -1717,17 +1723,6 @@ func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, op
 			return nil, fmt.Errorf("float arithmetic overflow")
 		}
 		return res, nil
-	case "/":
-		if rightNum.asFloat() == 0 {
-			return nil, fmt.Errorf("division by zero")
-		}
-		res := leftNum.asFloat() / rightNum.asFloat()
-		if math.IsNaN(res) || math.IsInf(res, 0) {
-			return nil, fmt.Errorf("float arithmetic overflow")
-		}
-		return res, nil
-	case "%":
-		return nil, fmt.Errorf("modulo requires integer operands")
 	default:
 		return nil, fmt.Errorf("unsupported operator: %s", operator)
 	}
@@ -1738,22 +1733,52 @@ func performModulo(left, right numberValue) (any, error) {
 		return nil, fmt.Errorf("modulo requires integer operands")
 	}
 
-	var rInt int64
-	if right.kind == numberKindSignedInt {
-		rInt = right.intVal
+	leftBig := new(big.Int)
+	if left.kind == numberKindSignedInt {
+		leftBig.SetInt64(left.intVal)
 	} else {
-		if right.uintVal > math.MaxInt64 {
-			return nil, fmt.Errorf("modulo divisor out of range")
-		}
-		rInt = int64(right.uintVal)
+		leftBig.SetUint64(left.uintVal)
 	}
 
-	if rInt == 0 {
+	rightBig := new(big.Int)
+	if right.kind == numberKindSignedInt {
+		rightBig.SetInt64(right.intVal)
+	} else {
+		rightBig.SetUint64(right.uintVal)
+	}
+
+	if rightBig.Sign() == 0 {
 		return nil, fmt.Errorf("division by zero")
 	}
 
-	if left.kind == numberKindSignedInt {
-		return left.intVal % rInt, nil
+	quo := new(big.Int)
+	rem := new(big.Int)
+	quo.QuoRem(leftBig, rightBig, rem)
+
+	if left.kind == numberKindUnsignedInt && right.kind == numberKindUnsignedInt {
+		if rem.IsUint64() {
+			return rem.Uint64(), nil
+		}
+		return nil, fmt.Errorf("modulo result out of range")
 	}
-	return int64(left.uintVal % uint64(rInt)), nil
+
+	if left.kind == numberKindSignedInt {
+		if rem.IsInt64() {
+			return rem.Int64(), nil
+		}
+		return nil, fmt.Errorf("modulo result out of range")
+	}
+
+	if rem.Sign() >= 0 {
+		if rem.IsUint64() {
+			if rem.IsInt64() {
+				return rem.Int64(), nil
+			}
+			return rem.Uint64(), nil
+		}
+	}
+	if rem.IsInt64() {
+		return rem.Int64(), nil
+	}
+	return nil, fmt.Errorf("modulo result out of range")
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -4108,6 +4109,23 @@ func FuzzLiteralPipeAndRawLexer(f *testing.F) {
 	})
 }
 
+func rangeFitsTestLimit(start, end, step int64, limit uint64) bool {
+	if step <= 0 || limit == 0 {
+		return false
+	}
+
+	var distance uint64
+	if start <= end {
+		distance = uint64(end) - uint64(start)
+	} else {
+		distance = uint64(start) - uint64(end)
+	}
+
+	// Iteration count is distance/step + 1.
+	// Avoid adding 1 because that could overflow.
+	return distance/uint64(step) < limit
+}
+
 func referenceRangeIterator(start, end, step int64) ([]int64, bool) {
 	if step <= 0 {
 		return nil, false
@@ -4117,9 +4135,8 @@ func referenceRangeIterator(start, end, step int64) ([]int64, bool) {
 	uStep := uint64(step)
 	curr := start
 	isAscending := start <= end
-	limit := 100 // Bounded iteration limit to prevent test hangs
 
-	for count := 0; count < limit; count++ {
+	for {
 		values = append(values, curr)
 
 		var dist uint64
@@ -4170,36 +4187,63 @@ func FuzzNumericRangeIterator(f *testing.F) {
 	engine := NewEngine("")
 
 	f.Fuzz(func(t *testing.T, start, end, step int64) {
-		expectedValues, valid := referenceRangeIterator(start, end, step)
-
 		data := map[string]any{
 			"start": start,
 			"end":   end,
 			"step":  step,
 		}
 
-		var buf bytes.Buffer
-		err := engine.RenderString(&buf, "|for i from start to end step step||i||separator|,|/separator||/for|", data)
+		// Invalid steps should still reach the engine and be tested.
+		if step <= 0 {
+			var buf bytes.Buffer
+			err := engine.RenderString(
+				&buf,
+				"|for i from start to end step step||i||/for|",
+				data,
+			)
 
-		if !valid {
 			if err == nil {
-				t.Errorf("expected error for invalid step %d, got nil", step)
+				t.Fatalf("expected error for invalid step %d", step)
 			}
 			return
 		}
 
+		const testIterationLimit uint64 = 100
+
+		// Do not ask the renderer to produce billions of values.
+		if !rangeFitsTestLimit(start, end, step, testIterationLimit) {
+			t.Skip()
+		}
+
+		expectedValues, valid := referenceRangeIterator(start, end, step)
+		if !valid {
+			t.Fatal("positive step unexpectedly rejected")
+		}
+
+		var buf bytes.Buffer
+		err := engine.RenderString(
+			&buf,
+			"|for i from start to end step step||i||separator|,|/separator||/for|",
+			data,
+		)
 		if err != nil {
-			t.Fatalf("unexpected rendering error for start=%d, end=%d, step=%d: %v", start, end, step, err)
+			t.Fatalf(
+				"unexpected error for start=%d end=%d step=%d: %v",
+				start,
+				end,
+				step,
+				err,
+			)
 		}
 
-		var expectedStrings []string
-		for _, val := range expectedValues {
-			expectedStrings = append(expectedStrings, fmt.Sprintf("%d", val))
+		expectedStrings := make([]string, len(expectedValues))
+		for i, value := range expectedValues {
+			expectedStrings[i] = strconv.FormatInt(value, 10)
 		}
+
 		expected := strings.Join(expectedStrings, ",")
-
-		if got := buf.String(); got != expected {
-			t.Errorf("start=%d, end=%d, step=%d: expected %q, got %q", start, end, step, expected, got)
+		if buf.String() != expected {
+			t.Fatalf("expected %q, got %q", expected, buf.String())
 		}
 	})
 }
