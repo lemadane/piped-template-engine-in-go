@@ -1179,56 +1179,105 @@ Write HTMX attribute bindings using `|htmx-get ...|`, `|htmx-post ...|`, `|htmx-
 ---
 
 ### 25. Alpine.js Integration & Reactive State Tags (Rarely Used)
-Abstract Alpine.js core script tags, plugin CDN references, `x-cloak` CSS rules, and reactive component state declarations into single inline tags.
+PTEGo abstracts Alpine.js core script tags, plugin CDN references, `x-cloak` CSS rules, CSP-compatible builds, and reactive component state declarations into single inline tags.
 
 #### A. Alpine.js Head Setup Tag (`|alpine ...|`, `|reactive ...|`, `|alpinejs ...|`)
 PTEGo supports `|alpine ...|`, `|reactive ...|`, and `|alpinejs ...|` interchangeably:
 ```html
 <head>
-    <!-- Loads Alpine.js core, collapse & focus plugins, and x-cloak CSS rules -->
+    <!-- Loads Alpine.js core (pinned v3.14.8), collapse & focus plugins, and x-cloak CSS rules -->
     |reactive plugins='collapse,focus' cloak=true|
 </head>
 ```
 
 #### Generated Head HTML Output
 ```html
-<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/focus@3.x.x/dist/cdn.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.14.8/dist/cdn.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/focus@3.14.8/dist/cdn.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
 <style>[x-cloak]{display:none !important;}</style>
 ```
 
-#### B. Alpine.js Reactive Component State Tag (`|alpine-data ...|`)
-Use `|alpine-data ...|` to declare `x-data` reactive state:
+#### B. Content Security Policy (CSP) Build (`build='csp'`)
+For applications operating under strict Content Security Policies that prohibit `unsafe-eval`, specify `build='csp'`:
 ```html
-<div |alpine-data open=false count=0 tab='home'|>
+<head>
+    |alpine build='csp' version='3.14.8' plugins='collapse,focus'|
+</head>
+```
+
+#### Generated CSP Head Output
+```html
+<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.14.8/dist/cdn.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/focus@3.14.8/dist/cdn.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/csp@3.14.8/dist/cdn.min.js"></script>
+```
+
+> [!NOTE]
+> **CSP Build Behavioral Limitations**: Alpine's CSP build removes runtime evaluation (`eval` / `Function`) and requires pre-compiling component logic or registering functions via `Alpine.data()`. Standard inline JavaScript expressions in `x-data` or `@click` that rely on runtime evaluation are not supported under strict CSP builds.
+
+#### C. Supported Official Plugins
+PTEGo validates plugin names against Alpine's official plugin registry:
+* `anchor`
+* `collapse`
+* `focus`
+* `intersect`
+* `mask`
+* `morph`
+* `persist`
+* `sort`
+
+> [!NOTE]
+> **Custom Core Source & Plugins**: When supplying a custom `src` (e.g. `src='/js/custom-alpine.js'`) along with `plugins`, PTEGo uses the pinned version or explicit `version` option for plugin CDN references, as custom script builds cannot be automatically inspected.
+
+#### D. Alpine.js Reactive Component State Tag (`|alpine-data ...|`)
+Use `|alpine-data ...|` to declare `x-data` reactive state. PTEGo strictly parses and serializes state properties to JSON:
+```html
+<div |alpine-data
+    message="It's ready"
+    user-name='Ada'
+    active=true
+    count=25
+    price=19.95
+    optional=null
+    items='["Rice","Coffee"]'
+    profile='{"name":"Lemuel","active":true}'
+|>
     <button @click="open = !open">Toggle Menu</button>
     <div |alpine-show 'open'| |alpine-cloak|>
-        <p>Active Tab: <span x-text="tab"></span></p>
+        <p>User: <span x-text="profile.name"></span></p>
     </div>
 </div>
 ```
 
 #### Generated Container HTML Output
 ```html
-<div x-data="{ count: 0, open: false, tab: 'home' }">
+<div x-data="{&quot;active&quot;:true,&quot;count&quot;:25,&quot;items&quot;:[&quot;Rice&quot;,&quot;Coffee&quot;],&quot;message&quot;:&quot;It's ready&quot;,&quot;optional&quot;:null,&quot;price&quot;:19.95,&quot;profile&quot;:{&quot;active&quot;:true,&quot;name&quot;:&quot;Lemuel&quot;},&quot;user-name&quot;:&quot;Ada&quot;}">
     <button @click="open = !open">Toggle Menu</button>
     <div x-show="open" x-cloak>
-        <p>Active Tab: <span x-text="tab"></span></p>
+        <p>User: <span x-text="profile.name"></span></p>
     </div>
 </div>
 ```
 
-#### C. Universal Alpine Element Attribute Mapping Reference
+> [!NOTE]
+> **x-data Serialization & Migration Note**: `x-data` attribute values are generated as HTML-entity escaped JSON (`&quot;`). After HTML entity decoding, the value is valid JSON and valid JavaScript. Existing PTE template syntax remains fully compatible.
+
+#### E. Universal Alpine Element Attribute Mapping Reference
 
 | PTEGo Directive Syntax | Generated HTML Output Attribute |
 | :--- | :--- |
-| **`|alpine-data open=false count=0|`** | `x-data="{ count: 0, open: false }"` |
+| **`|alpine-data open=false count=0|`** | `x-data="{&quot;count&quot;:0,&quot;open&quot;:false}"` |
 | **`|alpine-show 'isOpen'|`** | `x-show="isOpen"` |
+| **`|alpine-show.important 'isOpen'|`** | `x-show.important="isOpen"` |
 | **`|alpine-cloak|`** | `x-cloak` |
 | **`|alpine-text 'message'|`** | `x-text="message"` |
-| **`|alpine-html 'rawHtml'|`** | `x-html="rawHtml"` |
+| **`|alpine-html 'trustedMarkup'|`** | `x-html="trustedMarkup"` |
 | **`|alpine-model 'userQuery'|`** | `x-model="userQuery"` |
+| **`|alpine-model.debounce.500ms 'query'|`** | `x-model.debounce.500ms="query"` |
+
+> [!WARNING]
+> **Security Warning for `alpine-html` (`x-html`)**: Alpine's `x-html` directive sets the `innerHTML` of an element directly. It **must only be used with trusted or pre-sanitized content**. Never use `alpine-html` to render raw, unescaped user input, as doing so introduces Cross-Site Scripting (XSS) vulnerabilities.
 
 ---
 

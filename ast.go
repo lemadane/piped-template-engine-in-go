@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -1021,14 +1020,16 @@ func (n *PWANode) Render(ctx *Context, w io.Writer) error {
 		tags = append(tags, fmt.Sprintf(`<meta name="application-name" content="%s">`, htmlEscape(n.Name)))
 	}
 
-	tags = append(tags, fmt.Sprintf(`<link rel="manifest" href="%s">`, htmlEscape(manifest)))
+	if n.Manifest != "none" && n.Manifest != "false" {
+		tags = append(tags, fmt.Sprintf(`<link rel="manifest" href="%s">`, htmlEscape(manifest)))
+	}
 
-	if n.Icon != "" {
+	if n.Icon != "" && n.Icon != "none" && n.Icon != "false" {
 		tags = append(tags, fmt.Sprintf(`<link rel="apple-touch-icon" href="%s">`, htmlEscape(n.Icon)))
 		tags = append(tags, fmt.Sprintf(`<link rel="icon" href="%s">`, htmlEscape(n.Icon)))
 	}
 
-	if n.SW != "" {
+	if n.SW != "" && n.SW != "none" && n.SW != "false" {
 		tags = append(tags, fmt.Sprintf(`<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('%s');});}</script>`, htmlEscape(n.SW)))
 	}
 
@@ -1113,72 +1114,62 @@ type AlpineNode struct {
 	Src     string
 	Plugins []string
 	Cloak   bool
+	Version string
+	Build   string
 }
 
-func (n *AlpineNode) Render(ctx *Context, w io.Writer) error {
-	src := n.Src
-	if src == "" {
-		src = "https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"
+func (node *AlpineNode) Render(context *Context, writer io.Writer) error {
+	targetVersion := node.Version
+	if targetVersion == "" {
+		targetVersion = DefaultAlpineVersion
 	}
 
-	var tags []string
-	for _, plugin := range n.Plugins {
-		pName := strings.TrimSpace(plugin)
-		if pName != "" {
-			pUrl := fmt.Sprintf("https://cdn.jsdelivr.net/npm/@alpinejs/%s@3.x.x/dist/cdn.min.js", htmlEscape(pName))
-			tags = append(tags, fmt.Sprintf(`<script defer src="%s"></script>`, pUrl))
+	var scriptTags []string
+	for _, pluginName := range node.Plugins {
+		trimmedPluginName := strings.TrimSpace(pluginName)
+		if trimmedPluginName != "" {
+			pluginURL := fmt.Sprintf("https://cdn.jsdelivr.net/npm/@alpinejs/%s@%s/dist/cdn.min.js", htmlEscape(trimmedPluginName), htmlEscape(targetVersion))
+			scriptTags = append(scriptTags, fmt.Sprintf(`<script defer src="%s"></script>`, pluginURL))
 		}
 	}
 
-	tags = append(tags, fmt.Sprintf(`<script defer src="%s"></script>`, htmlEscape(src)))
-
-	if n.Cloak {
-		tags = append(tags, `<style>[x-cloak]{display:none !important;}</style>`)
+	var coreURL string
+	if node.Src != "" {
+		coreURL = node.Src
+	} else if node.Build == "csp" {
+		coreURL = fmt.Sprintf("https://cdn.jsdelivr.net/npm/@alpinejs/csp@%s/dist/cdn.min.js", htmlEscape(targetVersion))
+	} else {
+		coreURL = fmt.Sprintf("https://cdn.jsdelivr.net/npm/alpinejs@%s/dist/cdn.min.js", htmlEscape(targetVersion))
 	}
 
-	output := strings.Join(tags, "\n")
-	_, err := io.WriteString(w, output)
-	return err
+	scriptTags = append(scriptTags, fmt.Sprintf(`<script defer src="%s"></script>`, htmlEscape(coreURL)))
+
+	if node.Cloak {
+		scriptTags = append(scriptTags, `<style>[x-cloak]{display:none !important;}</style>`)
+	}
+
+	renderedOutput := strings.Join(scriptTags, "\n")
+	_, writeError := io.WriteString(writer, renderedOutput)
+	return writeError
 }
 
 // StateNode generates Alpine.js x-data reactive component state declarations
 type StateNode struct {
-	StateMap map[string]string
+	StateMap map[string]any
 }
 
-func (n *StateNode) Render(ctx *Context, w io.Writer) error {
-	var pairs []string
-	keys := make([]string, 0, len(n.StateMap))
-	for k := range n.StateMap {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		v := n.StateMap[k]
-		if v == "true" || v == "false" || isNumeric(v) || strings.HasPrefix(v, "[") || strings.HasPrefix(v, "{") {
-			pairs = append(pairs, fmt.Sprintf("%s: %s", k, v))
-		} else {
-			pairs = append(pairs, fmt.Sprintf("%s: '%s'", k, v))
-		}
+func (node *StateNode) Render(context *Context, writer io.Writer) error {
+	jsonBytes, marshalErr := json.Marshal(node.StateMap)
+	if marshalErr != nil {
+		return fmt.Errorf("failed to serialize Alpine state to JSON: %w", marshalErr)
 	}
 
-	jsonState := fmt.Sprintf("{ %s }", strings.Join(pairs, ", "))
-	output := fmt.Sprintf(`x-data="%s"`, strings.ReplaceAll(jsonState, `"`, "&quot;"))
-	_, err := io.WriteString(w, output)
-	return err
-}
+	jsonString := string(jsonBytes)
+	escapedJSON := strings.ReplaceAll(jsonString, `"`, "&quot;")
 
-func isNumeric(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if (s[i] < '0' || s[i] > '9') && s[i] != '.' && s[i] != '-' {
-			return false
-		}
-	}
-	return true
+	renderedOutput := fmt.Sprintf(`x-data="%s"`, escapedJSON)
+	_, writeError := io.WriteString(writer, renderedOutput)
+	return writeError
 }
 
 // AlpineAttrNode renders generic Alpine.js x-* element attributes (e.g. alpine-show, alpine-text, alpine-cloak)
@@ -1187,12 +1178,13 @@ type AlpineAttrNode struct {
 	Value     string
 }
 
-func (n *AlpineAttrNode) Render(ctx *Context, w io.Writer) error {
-	dir := strings.TrimPrefix(n.Directive, "alpine-")
-	if n.Value == "" {
-		_, err := io.WriteString(w, fmt.Sprintf(`x-%s`, dir))
-		return err
+func (node *AlpineAttrNode) Render(context *Context, writer io.Writer) error {
+	directiveName := strings.TrimPrefix(node.Directive, "alpine-")
+	if node.Value == "" {
+		_, writeError := io.WriteString(writer, fmt.Sprintf(`x-%s`, directiveName))
+		return writeError
 	}
-	_, err := io.WriteString(w, fmt.Sprintf(`x-%s="%s"`, dir, htmlEscape(n.Value)))
-	return err
+	escapedValue := htmlEscape(node.Value)
+	_, writeError := io.WriteString(writer, fmt.Sprintf(`x-%s="%s"`, directiveName, escapedValue))
+	return writeError
 }

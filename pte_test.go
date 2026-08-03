@@ -2,7 +2,9 @@ package pte
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -544,6 +546,30 @@ func TestPWANode(t *testing.T) {
 	if !strings.Contains(res, `navigator.serviceWorker.register('/sw.js')`) {
 		t.Errorf("expected service worker registration script, got %q", res)
 	}
+
+	// Test attribute aliases: theme-color, status-color, service-worker, title, touch-icon
+	aliasTemplate := `|pwa title='AliasApp' theme-color='#ff0000' touch-icon='/touch.png' service-worker='/sw-custom.js' status-color='black-translucent'|`
+	buf.Reset()
+	if err := engine.Render(&buf, aliasTemplate, nil); err != nil {
+		t.Fatalf("unexpected error rendering pwa node with aliases: %v", err)
+	}
+
+	resAlias := buf.String()
+	if !strings.Contains(resAlias, `meta name="theme-color" content="#ff0000"`) {
+		t.Errorf("expected theme-color alias tag, got %q", resAlias)
+	}
+	if !strings.Contains(resAlias, `apple-mobile-web-app-title" content="AliasApp"`) {
+		t.Errorf("expected title alias tag, got %q", resAlias)
+	}
+	if !strings.Contains(resAlias, `apple-mobile-web-app-status-bar-style" content="black-translucent"`) {
+		t.Errorf("expected status-color alias tag, got %q", resAlias)
+	}
+	if !strings.Contains(resAlias, `link rel="apple-touch-icon" href="/touch.png"`) {
+		t.Errorf("expected touch-icon alias tag, got %q", resAlias)
+	}
+	if !strings.Contains(resAlias, `navigator.serviceWorker.register('/sw-custom.js')`) {
+		t.Errorf("expected service-worker alias script, got %q", resAlias)
+	}
 }
 
 func TestHTMXTags(t *testing.T) {
@@ -578,54 +604,421 @@ func TestHTMXTags(t *testing.T) {
 	}
 }
 
-func TestAlpineTags(t *testing.T) {
-	engine := NewEngine("")
-	headTemplate := `|reactive plugins='collapse,focus' cloak=true|`
+func TestAlpineSetup(testingInstance *testing.T) {
+	templateEngine := NewEngine("")
 
-	var buf bytes.Buffer
-	if err := engine.Render(&buf, headTemplate, nil); err != nil {
-		t.Fatalf("unexpected error rendering reactive head node: %v", err)
+	setupTestCases := []struct {
+		caseName         string
+		templateString   string
+		expectedOutput   string
+		errorSubstring   string
+		checkScriptOrder bool
+	}{
+		{
+			caseName:       "Default setup with alias alpine",
+			templateString: `|alpine|`,
+			expectedOutput: `<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>`,
+		},
+		{
+			caseName:       "Default setup with alias alpinejs",
+			templateString: `|alpinejs|`,
+			expectedOutput: `<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>`,
+		},
+		{
+			caseName:       "Default setup with alias reactive",
+			templateString: `|reactive|`,
+			expectedOutput: `<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>`,
+		},
+		{
+			caseName:       "Explicit pinned version",
+			templateString: `|alpine version='3.12.0'|`,
+			expectedOutput: `<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.12.0/dist/cdn.min.js"></script>`,
+		},
+		{
+			caseName:       "CSP build option",
+			templateString: `|alpine build='csp' version='3.14.8'|`,
+			expectedOutput: `<script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/csp@3.14.8/dist/cdn.min.js"></script>`,
+		},
+		{
+			caseName:       "Custom source URL",
+			templateString: `|alpine src='https://example.com/custom-alpine.js'|`,
+			expectedOutput: `<script defer src="https://example.com/custom-alpine.js"></script>`,
+		},
+		{
+			caseName:         "Plugins loaded before core",
+			templateString:   `|alpine plugins='collapse,focus'|`,
+			checkScriptOrder: true,
+		},
+		{
+			caseName:       "Cloak enabled",
+			templateString: `|alpine cloak=true|`,
+			expectedOutput: `<style>[x-cloak]{display:none !important;}</style>`,
+		},
+		{
+			caseName:       "Cloak disabled",
+			templateString: `|alpine cloak=false|`,
+		},
+		{
+			caseName:       "Invalid cloak value",
+			templateString: `|alpine cloak=maybe|`,
+			errorSubstring: `invalid Alpine option "cloak": expected true, false, 1, or 0, received "maybe"`,
+		},
+		{
+			caseName:       "Unknown setup option",
+			templateString: `|alpine unknown=value|`,
+			errorSubstring: `invalid Alpine setup option "unknown"`,
+		},
+		{
+			caseName:       "Duplicate setup option",
+			templateString: `|alpine cloak=true cloak=false|`,
+			errorSubstring: `duplicate property "cloak"`,
+		},
+		{
+			caseName:       "Invalid version string",
+			templateString: `|alpine version='3.14<script>'|`,
+			errorSubstring: `contains illegal characters`,
+		},
+		{
+			caseName:       "Invalid source URL",
+			templateString: `|alpine src='javascript:alert(1)'|`,
+			errorSubstring: `must use http, https, or relative path`,
+		},
+		{
+			caseName:       "Unterminated quoted source",
+			templateString: `|alpine src='https://example.com/alpine.js|`,
+			errorSubstring: `unterminated quote`,
+		},
+		{
+			caseName:       "Unknown plugin name",
+			templateString: `|alpine plugins='collaps'|`,
+			errorSubstring: `unknown Alpine plugin "collaps"`,
+		},
+		{
+			caseName:       "Duplicate plugin name",
+			templateString: `|alpine plugins='collapse,collapse'|`,
+			errorSubstring: `duplicate Alpine plugin "collapse"`,
+		},
 	}
 
-	res := buf.String()
-	if !strings.Contains(res, `cdn.jsdelivr.net/npm/@alpinejs/collapse`) {
-		t.Errorf("expected collapse plugin script tag, got %q", res)
+	for _, currentTestCase := range setupTestCases {
+		testingInstance.Run(currentTestCase.caseName, func(subTestingInstance *testing.T) {
+			outputBuffer := &bytes.Buffer{}
+			renderErr := templateEngine.Render(outputBuffer, currentTestCase.templateString, nil)
+
+			if currentTestCase.errorSubstring != "" {
+				if renderErr == nil {
+					subTestingInstance.Fatalf("expected error containing %q, got nil", currentTestCase.errorSubstring)
+				}
+				if !strings.Contains(renderErr.Error(), currentTestCase.errorSubstring) {
+					subTestingInstance.Errorf("expected error containing %q, got %v", currentTestCase.errorSubstring, renderErr)
+				}
+				return
+			}
+
+			if renderErr != nil {
+				subTestingInstance.Fatalf("unexpected rendering error: %v", renderErr)
+			}
+
+			renderedOutput := outputBuffer.String()
+			if currentTestCase.expectedOutput != "" && !strings.Contains(renderedOutput, currentTestCase.expectedOutput) {
+				subTestingInstance.Errorf("expected output to contain %q, got %q", currentTestCase.expectedOutput, renderedOutput)
+			}
+
+			if currentTestCase.checkScriptOrder {
+				collapseIndex := strings.Index(renderedOutput, "@alpinejs/collapse")
+				focusIndex := strings.Index(renderedOutput, "@alpinejs/focus")
+				coreIndex := strings.Index(renderedOutput, "alpinejs@3.14.8")
+
+				if collapseIndex == -1 || focusIndex == -1 || coreIndex == -1 {
+					subTestingInstance.Fatalf("missing expected plugin or core scripts in %q", renderedOutput)
+				}
+				if !(collapseIndex < coreIndex && focusIndex < coreIndex) {
+					subTestingInstance.Errorf("expected plugin script tags before core script tag in %q", renderedOutput)
+				}
+			}
+		})
 	}
-	if !strings.Contains(res, `cdn.jsdelivr.net/npm/alpinejs`) {
-		t.Errorf("expected alpine core script tag, got %q", res)
-	}
-	if !strings.Contains(res, `[x-cloak]{display:none !important;}`) {
-		t.Errorf("expected x-cloak css rule, got %q", res)
+}
+
+func TestAlpineState(testingInstance *testing.T) {
+	templateEngine := NewEngine("")
+
+	stateTestCases := []struct {
+		caseName       string
+		templateString string
+		expectedValues map[string]any
+		errorSubstring string
+	}{
+		{
+			caseName:       "Normal string",
+			templateString: `<div |alpine-data message='Hello World'|></div>`,
+			expectedValues: map[string]any{"message": "Hello World"},
+		},
+		{
+			caseName:       "String containing apostrophe",
+			templateString: `<div |alpine-data message="It's ready"|></div>`,
+			expectedValues: map[string]any{"message": "It's ready"},
+		},
+		{
+			caseName:       "String containing double quotes",
+			templateString: `<div |alpine-data message='Say "Hello"'|></div>`,
+			expectedValues: map[string]any{"message": `Say "Hello"`},
+		},
+		{
+			caseName:       "String containing both quote types",
+			templateString: `<div |alpine-data message='It\'s "ready"'|></div>`,
+			expectedValues: map[string]any{"message": `It's "ready"`},
+		},
+		{
+			caseName:       "Backslashes and newlines",
+			templateString: `<div |alpine-data path='C:\\Windows\\System32'|></div>`,
+			expectedValues: map[string]any{"path": `C:\Windows\System32`},
+		},
+		{
+			caseName:       "Unicode characters",
+			templateString: `<div |alpine-data user='Ada 👩‍💻' greeting='你好'|></div>`,
+			expectedValues: map[string]any{"user": "Ada 👩‍💻", "greeting": "你好"},
+		},
+		{
+			caseName:       "HTML-significant characters",
+			templateString: `<div |alpine-data markup='<div>Content & More</div>'|></div>`,
+			expectedValues: map[string]any{"markup": "<div>Content & More</div>"},
+		},
+		{
+			caseName:       "Boolean values",
+			templateString: `<div |alpine-data active=true disabled=false|></div>`,
+			expectedValues: map[string]any{"active": true, "disabled": false},
+		},
+		{
+			caseName:       "Integer values",
+			templateString: `<div |alpine-data count=25 step=-5|></div>`,
+			expectedValues: map[string]any{"count": float64(25), "step": float64(-5)},
+		},
+		{
+			caseName:       "Decimal values",
+			templateString: `<div |alpine-data price=19.95 score=95.5|></div>`,
+			expectedValues: map[string]any{"price": 19.95, "score": 95.5},
+		},
+		{
+			caseName:       "Null value",
+			templateString: `<div |alpine-data optional=null|></div>`,
+			expectedValues: map[string]any{"optional": nil},
+		},
+		{
+			caseName:       "JSON Array",
+			templateString: `<div |alpine-data items='["Rice","Coffee"]'|></div>`,
+			expectedValues: map[string]any{"items": []any{"Rice", "Coffee"}},
+		},
+		{
+			caseName:       "JSON Object",
+			templateString: `<div |alpine-data profile='{"name":"Lemuel","active":true}'|></div>`,
+			expectedValues: map[string]any{"profile": map[string]any{"name": "Lemuel", "active": true}},
+		},
+		{
+			caseName:       "Property name with hyphen",
+			templateString: `<div |alpine-data user-name='Ada'|></div>`,
+			expectedValues: map[string]any{"user-name": "Ada"},
+		},
+		{
+			caseName:       "Invalid number 1.2.3",
+			templateString: `<div |alpine-data count=1.2.3|></div>`,
+			errorSubstring: `invalid Alpine state value for "count": "1.2.3" is not a valid number`,
+		},
+		{
+			caseName:       "Invalid number --",
+			templateString: `<div |alpine-data count=--|></div>`,
+			errorSubstring: `invalid Alpine state value for "count": "--" is not a valid number`,
+		},
+		{
+			caseName:       "Invalid number NaN",
+			templateString: `<div |alpine-data count=NaN|></div>`,
+			errorSubstring: `invalid Alpine state value for "count": "NaN" is not a valid number`,
+		},
+		{
+			caseName:       "Malformed JSON array",
+			templateString: `<div |alpine-data items='[1,'|></div>`,
+			errorSubstring: `invalid Alpine state value for "items": malformed JSON array`,
+		},
+		{
+			caseName:       "Malformed JSON object",
+			templateString: `<div |alpine-data profile='{name:'|></div>`,
+			errorSubstring: `invalid Alpine state value for "profile": malformed JSON object`,
+		},
+		{
+			caseName:       "Duplicate properties",
+			templateString: `<div |alpine-data count=1 count=2|></div>`,
+			errorSubstring: `duplicate property "count"`,
+		},
+		{
+			caseName:       "Unterminated quote",
+			templateString: `<div |alpine-data message='unterminated|></div>`,
+			errorSubstring: `unterminated quote`,
+		},
+		{
+			caseName:       "Missing property name",
+			templateString: `<div |alpine-data =value|></div>`,
+			errorSubstring: `missing property name`,
+		},
+		{
+			caseName:       "Missing value",
+			templateString: `<div |alpine-data count=|></div>`,
+			errorSubstring: `missing value`,
+		},
 	}
 
-	// Verify alpinejs alias
-	buf.Reset()
-	if err := engine.Render(&buf, `|alpinejs|`, nil); err != nil {
-		t.Fatalf("unexpected error rendering alpinejs alias: %v", err)
+	for _, currentTestCase := range stateTestCases {
+		testingInstance.Run(currentTestCase.caseName, func(subTestingInstance *testing.T) {
+			outputBuffer := &bytes.Buffer{}
+			renderErr := templateEngine.Render(outputBuffer, currentTestCase.templateString, nil)
+
+			if currentTestCase.errorSubstring != "" {
+				if renderErr == nil {
+					subTestingInstance.Fatalf("expected error containing %q, got nil", currentTestCase.errorSubstring)
+				}
+				if !strings.Contains(renderErr.Error(), currentTestCase.errorSubstring) {
+					subTestingInstance.Errorf("expected error containing %q, got %v", currentTestCase.errorSubstring, renderErr)
+				}
+				return
+			}
+
+			if renderErr != nil {
+				subTestingInstance.Fatalf("unexpected rendering error: %v", renderErr)
+			}
+
+			renderedOutput := outputBuffer.String()
+			attributeStartIndex := strings.Index(renderedOutput, `x-data="`)
+			if attributeStartIndex == -1 {
+				subTestingInstance.Fatalf("x-data attribute missing in %q", renderedOutput)
+			}
+
+			quoteStartIndex := attributeStartIndex + len(`x-data="`)
+			quoteEndIndex := strings.Index(renderedOutput[quoteStartIndex:], `"`)
+			if quoteEndIndex == -1 {
+				subTestingInstance.Fatalf("unclosed x-data attribute quote in %q", renderedOutput)
+			}
+
+			rawAttributeContent := renderedOutput[quoteStartIndex : quoteStartIndex+quoteEndIndex]
+			unescapedJSON := strings.ReplaceAll(rawAttributeContent, "&quot;", `"`)
+
+			var decodedStateMap map[string]any
+			if unmarshalErr := json.Unmarshal([]byte(unescapedJSON), &decodedStateMap); unmarshalErr != nil {
+				subTestingInstance.Fatalf("decoded x-data is not valid JSON %q: %v", unescapedJSON, unmarshalErr)
+			}
+
+			for expectedKey, expectedVal := range currentTestCase.expectedValues {
+				actualVal, keyExists := decodedStateMap[expectedKey]
+				if !keyExists {
+					subTestingInstance.Errorf("expected key %q missing from decoded x-data %q", expectedKey, unescapedJSON)
+					continue
+				}
+				if !reflect.DeepEqual(actualVal, expectedVal) {
+					subTestingInstance.Errorf("key %q: expected %#v (type %T), got %#v (type %T)", expectedKey, expectedVal, expectedVal, actualVal, actualVal)
+				}
+			}
+		})
 	}
-	if !strings.Contains(buf.String(), `cdn.jsdelivr.net/npm/alpinejs`) {
-		t.Errorf("expected alpine core script tag for alpinejs alias, got %q", buf.String())
+}
+
+func TestAlpineDirectives(testingInstance *testing.T) {
+	templateEngine := NewEngine("")
+
+	directiveTestCases := []struct {
+		caseName       string
+		templateString string
+		expectedOutput string
+		errorSubstring string
+	}{
+		{
+			caseName:       "alpine-show valid",
+			templateString: `<div |alpine-show 'isOpen'|></div>`,
+			expectedOutput: `x-show="isOpen"`,
+		},
+		{
+			caseName:       "alpine-show missing expression",
+			templateString: `<div |alpine-show|></div>`,
+			errorSubstring: `Alpine directive "alpine-show" requires an expression`,
+		},
+		{
+			caseName:       "alpine-cloak valid",
+			templateString: `<div |alpine-cloak|></div>`,
+			expectedOutput: `x-cloak`,
+		},
+		{
+			caseName:       "alpine-cloak with value error",
+			templateString: `<div |alpine-cloak 'unexpected'|></div>`,
+			errorSubstring: `Alpine directive "alpine-cloak" does not accept a value`,
+		},
+		{
+			caseName:       "alpine-text valid",
+			templateString: `<span |alpine-text 'message'|></span>`,
+			expectedOutput: `x-text="message"`,
+		},
+		{
+			caseName:       "alpine-html valid",
+			templateString: `<div |alpine-html 'trustedMarkup'|></div>`,
+			expectedOutput: `x-html="trustedMarkup"`,
+		},
+		{
+			caseName:       "alpine-model valid",
+			templateString: `<input |alpine-model 'userQuery'|>`,
+			expectedOutput: `x-model="userQuery"`,
+		},
+		{
+			caseName:       "alpine-model missing expression",
+			templateString: `<input |alpine-model|>`,
+			errorSubstring: `Alpine directive "alpine-model" requires an expression`,
+		},
+		{
+			caseName:       "Misspelled directive alpine-shwo",
+			templateString: `<div |alpine-shwo 'open'|></div>`,
+			errorSubstring: `unknown Alpine directive "alpine-shwo"; did you mean "alpine-show"?`,
+		},
+		{
+			caseName:       "Valid modifier alpine-show.important",
+			templateString: `<div |alpine-show.important 'open'|></div>`,
+			expectedOutput: `x-show.important="open"`,
+		},
+		{
+			caseName:       "Valid modifier alpine-model.debounce.500ms",
+			templateString: `<input |alpine-model.debounce.500ms 'query'|>`,
+			expectedOutput: `x-model.debounce.500ms="query"`,
+		},
+		{
+			caseName:       "Combined HTMX and Alpine",
+			templateString: `<button |alpine-show 'open'| |htmx-get '/api/tasks'|>Click</button>`,
+			expectedOutput: `x-show="open" hx-get="/api/tasks"`,
+		},
+		{
+			caseName:       "Pure @click alongside abstracted directive",
+			templateString: `<button @click="open = !open" |alpine-show 'open'|>Toggle</button>`,
+			expectedOutput: `<button @click="open = !open" x-show="open">Toggle</button>`,
+		},
 	}
 
-	stateTemplate := `<div |alpine-data open=false count=0 tab='home'|>`
-	buf.Reset()
-	if err := engine.Render(&buf, stateTemplate, nil); err != nil {
-		t.Fatalf("unexpected error rendering state node: %v", err)
-	}
+	for _, currentTestCase := range directiveTestCases {
+		testingInstance.Run(currentTestCase.caseName, func(subTestingInstance *testing.T) {
+			outputBuffer := &bytes.Buffer{}
+			renderErr := templateEngine.Render(outputBuffer, currentTestCase.templateString, nil)
 
-	stateRes := buf.String()
-	if !strings.Contains(stateRes, `x-data="{ count: 0, open: false, tab: 'home' }"`) {
-		t.Errorf("expected x-data reactive state output, got %q", stateRes)
-	}
+			if currentTestCase.errorSubstring != "" {
+				if renderErr == nil {
+					subTestingInstance.Fatalf("expected error containing %q, got nil", currentTestCase.errorSubstring)
+				}
+				if !strings.Contains(renderErr.Error(), currentTestCase.errorSubstring) {
+					subTestingInstance.Errorf("expected error containing %q, got %v", currentTestCase.errorSubstring, renderErr)
+				}
+				return
+			}
 
-	showTemplate := `<div |alpine-show 'open'| |alpine-cloak|>`
-	buf.Reset()
-	if err := engine.Render(&buf, showTemplate, nil); err != nil {
-		t.Fatalf("unexpected error rendering alpine-show node: %v", err)
-	}
-	showRes := buf.String()
-	if !strings.Contains(showRes, `x-show="open"`) || !strings.Contains(showRes, `x-cloak`) {
-		t.Errorf("expected x-show and x-cloak rendering, got %q", showRes)
+			if renderErr != nil {
+				subTestingInstance.Fatalf("unexpected rendering error: %v", renderErr)
+			}
+
+			renderedOutput := outputBuffer.String()
+			if currentTestCase.expectedOutput != "" && !strings.Contains(renderedOutput, currentTestCase.expectedOutput) {
+				subTestingInstance.Errorf("expected output to contain %q, got %q", currentTestCase.expectedOutput, renderedOutput)
+			}
+		})
 	}
 }
 

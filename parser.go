@@ -1167,21 +1167,36 @@ func (p *Parser) parsePWA(tok Token) (Node, error) {
 	if strings.HasPrefix(val, "pwa") {
 		val = strings.TrimSpace(val[3:])
 	}
+	if strings.HasPrefix(val, "-meta") || strings.HasPrefix(val, "-tags") {
+		val = strings.TrimSpace(val[5:])
+	}
 
 	attrs := parseKeyValuePairs(val)
-	name := attrs["name"]
-	if name == "" {
-		name = attrs["title"]
-	}
+
+	name := getAttr(attrs, "name", "title", "app-name", "application-name", "appName", "applicationName")
+	manifest := getAttr(attrs, "manifest", "manifest-url", "manifestUrl", "manifest_url")
+	theme := getAttr(attrs, "theme", "theme-color", "themeColor", "theme_color")
+	icon := getAttr(attrs, "icon", "icons", "apple-icon", "appleIcon", "apple-touch-icon", "appleTouchIcon", "touch-icon", "touchIcon")
+	sw := getAttr(attrs, "sw", "service-worker", "serviceWorker", "service_worker", "sw-path", "swPath")
+	statusColor := getAttr(attrs, "statusColor", "status-color", "status_color", "status-bar-style", "statusBarStyle", "status")
 
 	return &PWANode{
 		Name:        name,
-		Manifest:    attrs["manifest"],
-		Theme:       attrs["theme"],
-		Icon:        attrs["icon"],
-		SW:          attrs["sw"],
-		StatusColor: attrs["statusColor"],
+		Manifest:    manifest,
+		Theme:       theme,
+		Icon:        icon,
+		SW:          sw,
+		StatusColor: statusColor,
 	}, nil
+}
+
+func getAttr(attrs map[string]string, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := attrs[k]; ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func parseKeyValuePairs(input string) map[string]string {
@@ -1197,15 +1212,31 @@ func parseKeyValuePairs(input string) map[string]string {
 
 		eqIdx := strings.IndexByte(input[i:], '=')
 		if eqIdx == -1 {
+			for _, flag := range strings.Fields(input[i:]) {
+				result[flag] = "true"
+			}
 			break
 		}
-		key := strings.TrimSpace(input[i : i+eqIdx])
+
+		rawKeySegment := strings.TrimSpace(input[i : i+eqIdx])
+		fields := strings.Fields(rawKeySegment)
+		if len(fields) == 0 {
+			i += eqIdx + 1
+			continue
+		}
+
+		for j := 0; j < len(fields)-1; j++ {
+			result[fields[j]] = "true"
+		}
+		key := fields[len(fields)-1]
+
 		i += eqIdx + 1
 
 		for i < len(input) && isWhitespaceChar(input[i]) {
 			i++
 		}
 		if i >= len(input) {
+			result[key] = ""
 			break
 		}
 
@@ -1319,63 +1350,163 @@ func (p *Parser) parseHXAttr(tok Token) (Node, error) {
 	}, nil
 }
 
-func (p *Parser) parseAlpine(tok Token) (Node, error) {
-	val := strings.TrimSpace(tok.Value)
-	if strings.HasPrefix(val, "alpinejs") {
-		val = strings.TrimSpace(val[8:])
-	} else if strings.HasPrefix(val, "alpine") {
-		val = strings.TrimSpace(val[6:])
-	} else if strings.HasPrefix(val, "reactive") {
-		val = strings.TrimSpace(val[8:])
+func (parserInstance *Parser) parseAlpine(token Token) (Node, error) {
+	rawDirectiveValue := strings.TrimSpace(token.Value)
+	if strings.HasPrefix(rawDirectiveValue, "alpinejs") {
+		rawDirectiveValue = strings.TrimSpace(rawDirectiveValue[8:])
+	} else if strings.HasPrefix(rawDirectiveValue, "alpine") {
+		rawDirectiveValue = strings.TrimSpace(rawDirectiveValue[6:])
+	} else if strings.HasPrefix(rawDirectiveValue, "reactive") {
+		rawDirectiveValue = strings.TrimSpace(rawDirectiveValue[8:])
 	}
 
-	attrs := parseKeyValuePairs(val)
-	var plugins []string
-	if pluginStr, ok := attrs["plugins"]; ok && pluginStr != "" {
-		for _, pl := range strings.Split(pluginStr, ",") {
-			if trimmed := strings.TrimSpace(pl); trimmed != "" {
-				plugins = append(plugins, trimmed)
-			}
+	parsedOptionList, optionMap, parseErr := parseAlpineOptions(rawDirectiveValue)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+
+	// Validate setup options
+	for _, option := range parsedOptionList {
+		if !SupportedAlpineSetupOptions[option.Key] {
+			return nil, fmt.Errorf("invalid Alpine setup option %q; supported options are build, cloak, plugins, src, version", option.Key)
 		}
 	}
 
-	cloak := true
-	if cVal, ok := attrs["cloak"]; ok {
-		cloak = cVal == "true" || cVal == "1" || cVal == ""
+	// Process cloak option
+	cloakEnabled := true
+	if cloakValue, exists := optionMap["cloak"]; exists {
+		trimmedCloakValue := strings.TrimSpace(cloakValue)
+		if trimmedCloakValue == "true" || trimmedCloakValue == "1" || trimmedCloakValue == "" {
+			cloakEnabled = true
+		} else if trimmedCloakValue == "false" || trimmedCloakValue == "0" {
+			cloakEnabled = false
+		} else {
+			return nil, fmt.Errorf("invalid Alpine option %q: expected true, false, 1, or 0, received %q", "cloak", cloakValue)
+		}
+	}
+
+	// Process build option
+	buildType := "standard"
+	if buildValue, exists := optionMap["build"]; exists {
+		trimmedBuildValue := strings.TrimSpace(buildValue)
+		if trimmedBuildValue == "standard" || trimmedBuildValue == "csp" {
+			buildType = trimmedBuildValue
+		} else {
+			return nil, fmt.Errorf("invalid Alpine build %q; expected \"standard\" or \"csp\"", buildValue)
+		}
+	}
+
+	// Process version option
+	versionString := ""
+	if rawVersion, exists := optionMap["version"]; exists {
+		versionString = strings.TrimSpace(rawVersion)
+		if validationErr := validateAlpineVersion(versionString); validationErr != nil {
+			return nil, validationErr
+		}
+	}
+
+	// Process src option
+	sourceURL := ""
+	if rawSourceURL, exists := optionMap["src"]; exists {
+		sourceURL = strings.TrimSpace(rawSourceURL)
+		if validationErr := validateAlpineURL(sourceURL); validationErr != nil {
+			return nil, validationErr
+		}
+	}
+
+	// Process plugins option
+	var pluginList []string
+	seenPlugins := make(map[string]bool)
+	if pluginString, exists := optionMap["plugins"]; exists && pluginString != "" {
+		for _, rawPluginName := range strings.Split(pluginString, ",") {
+			trimmedPluginName := strings.TrimSpace(rawPluginName)
+			if trimmedPluginName == "" {
+				return nil, fmt.Errorf("empty plugin name specified in Alpine plugins list")
+			}
+			if !SupportedAlpinePlugins[trimmedPluginName] {
+				return nil, fmt.Errorf("unknown Alpine plugin %q; supported plugins are anchor, collapse, focus, intersect, mask, morph, persist, sort", trimmedPluginName)
+			}
+			if seenPlugins[trimmedPluginName] {
+				return nil, fmt.Errorf("duplicate Alpine plugin %q requested", trimmedPluginName)
+			}
+			seenPlugins[trimmedPluginName] = true
+			pluginList = append(pluginList, trimmedPluginName)
+		}
 	}
 
 	return &AlpineNode{
-		Src:     attrs["src"],
-		Plugins: plugins,
-		Cloak:   cloak,
+		Src:     sourceURL,
+		Plugins: pluginList,
+		Cloak:   cloakEnabled,
+		Version: versionString,
+		Build:   buildType,
 	}, nil
 }
 
-func (p *Parser) parseState(tok Token) (Node, error) {
-	val := strings.TrimSpace(tok.Value)
-	if strings.HasPrefix(val, "alpine-data") {
-		val = strings.TrimSpace(val[11:])
+func (parserInstance *Parser) parseState(token Token) (Node, error) {
+	rawDirectiveValue := strings.TrimSpace(token.Value)
+	if strings.HasPrefix(rawDirectiveValue, "alpine-data") {
+		rawDirectiveValue = strings.TrimSpace(rawDirectiveValue[11:])
 	}
 
-	attrs := parseKeyValuePairs(val)
+	parsedOptionList, _, parseErr := parseAlpineOptions(rawDirectiveValue)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+
+	stateMap := make(map[string]any)
+	for _, option := range parsedOptionList {
+		typedStateValue, conversionErr := parseAlpineStateValue(option.Key, option.Value)
+		if conversionErr != nil {
+			return nil, conversionErr
+		}
+		stateMap[option.Key] = typedStateValue
+	}
+
 	return &StateNode{
-		StateMap: attrs,
+		StateMap: stateMap,
 	}, nil
 }
 
-func (p *Parser) parseAlpineAttr(tok Token) (Node, error) {
-	val := strings.TrimSpace(tok.Value)
-	parts := strings.SplitN(val, " ", 2)
-	dir := parts[0]
-	expr := ""
-	if len(parts) > 1 {
-		expr = strings.TrimSpace(parts[1])
-		if len(expr) > 1 && ((expr[0] == '\'' && expr[len(expr)-1] == '\'') || (expr[0] == '"' && expr[len(expr)-1] == '"')) {
-			expr = expr[1 : len(expr)-1]
+func (parserInstance *Parser) parseAlpineAttr(token Token) (Node, error) {
+	rawDirectiveValue := strings.TrimSpace(token.Value)
+	partTokens := strings.SplitN(rawDirectiveValue, " ", 2)
+
+	fullDirectiveName := partTokens[0]
+	expressionString := ""
+	if len(partTokens) > 1 {
+		expressionString = strings.TrimSpace(partTokens[1])
+		if len(expressionString) > 1 && ((expressionString[0] == '\'' && expressionString[len(expressionString)-1] == '\'') || (expressionString[0] == '"' && expressionString[len(expressionString)-1] == '"')) {
+			expressionString = expressionString[1 : len(expressionString)-1]
 		}
 	}
+
+	baseDirectiveName := fullDirectiveName
+	if dotIndex := strings.IndexByte(fullDirectiveName, '.'); dotIndex != -1 {
+		baseDirectiveName = fullDirectiveName[:dotIndex]
+	}
+
+	if !SupportedAlpineElementDirectives[baseDirectiveName] {
+		closestMatch := findClosestDirective(baseDirectiveName)
+		if closestMatch != "" {
+			return nil, fmt.Errorf("unknown Alpine directive %q; did you mean %q?", fullDirectiveName, closestMatch)
+		}
+		return nil, fmt.Errorf("unknown Alpine directive %q", fullDirectiveName)
+	}
+
+	// Enforce directive constraints
+	if baseDirectiveName == "alpine-cloak" {
+		if expressionString != "" {
+			return nil, fmt.Errorf("Alpine directive %q does not accept a value", fullDirectiveName)
+		}
+	} else if baseDirectiveName == "alpine-show" || baseDirectiveName == "alpine-text" || baseDirectiveName == "alpine-html" || baseDirectiveName == "alpine-model" {
+		if expressionString == "" {
+			return nil, fmt.Errorf("Alpine directive %q requires an expression", baseDirectiveName)
+		}
+	}
+
 	return &AlpineAttrNode{
-		Directive: dir,
-		Value:     expr,
+		Directive: fullDirectiveName,
+		Value:     expressionString,
 	}, nil
 }
