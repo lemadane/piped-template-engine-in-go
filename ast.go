@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -893,12 +893,11 @@ func (node *ForNode) Render(context *Context, writer io.Writer) error {
 	executedAtLeastOnce := false
 
 	if startVal <= endVal {
-		totalSteps := (endVal-startVal)/stepVal + 1
-		stepIndex := int64(0)
-		for currentVal := startVal; currentVal <= endVal; currentVal += stepVal {
+		currentVal := startVal
+		for {
 			executedAtLeastOnce = true
-			isLastStep := (stepIndex == totalSteps-1)
-			stepIndex++
+			isLastStep := (endVal-currentVal < stepVal)
+
 			loopScope := map[string]any{
 				node.VarName: currentVal,
 			}
@@ -908,9 +907,8 @@ func (node *ForNode) Render(context *Context, writer io.Writer) error {
 				break
 			}
 			if errors.Is(err, errContinue) {
-				continue
-			}
-			if err != nil {
+				// skip body rest
+			} else if err != nil {
 				return err
 			}
 
@@ -920,19 +918,27 @@ func (node *ForNode) Render(context *Context, writer io.Writer) error {
 						break
 					}
 					if errors.Is(err, errContinue) {
-						continue
+						// proceed
+					} else {
+						return err
 					}
-					return err
 				}
 			}
+
+			if isLastStep {
+				break
+			}
+			if endVal-currentVal < stepVal {
+				break
+			}
+			currentVal += stepVal
 		}
 	} else {
-		totalSteps := (startVal-endVal)/stepVal + 1
-		stepIndex := int64(0)
-		for currentVal := startVal; currentVal >= endVal; currentVal -= stepVal {
+		currentVal := startVal
+		for {
 			executedAtLeastOnce = true
-			isLastStep := (stepIndex == totalSteps-1)
-			stepIndex++
+			isLastStep := (currentVal-endVal < stepVal)
+
 			loopScope := map[string]any{
 				node.VarName: currentVal,
 			}
@@ -942,9 +948,8 @@ func (node *ForNode) Render(context *Context, writer io.Writer) error {
 				break
 			}
 			if errors.Is(err, errContinue) {
-				continue
-			}
-			if err != nil {
+				// skip body rest
+			} else if err != nil {
 				return err
 			}
 
@@ -954,11 +959,20 @@ func (node *ForNode) Render(context *Context, writer io.Writer) error {
 						break
 					}
 					if errors.Is(err, errContinue) {
-						continue
+						// proceed
+					} else {
+						return err
 					}
-					return err
 				}
 			}
+
+			if isLastStep {
+				break
+			}
+			if currentVal-endVal < stepVal {
+				break
+			}
+			currentVal -= stepVal
 		}
 	}
 
@@ -977,19 +991,39 @@ func evaluateInt(evaluator *Evaluator, expression string, context *Context) (int
 	if evaluatedVal == nil {
 		return 0, fmt.Errorf("expression %q evaluated to null", expression)
 	}
-	num, isNum := toFloat64(evaluatedVal)
+
+	num, isNum := parseNumberValue(evaluatedVal)
 	if !isNum {
-		if strVal, isString := evaluatedVal.(string); isString {
-			if parsedInt, err := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); err == nil {
-				return parsedInt, nil
-			}
-			if parsedFloat, err := strconv.ParseFloat(strings.TrimSpace(strVal), 64); err == nil {
-				return int64(parsedFloat), nil
-			}
-		}
 		return 0, fmt.Errorf("expression %q did not evaluate to an integer", expression)
 	}
-	return int64(num), nil
+
+	switch num.kind {
+	case numberKindSignedInt:
+		return num.intVal, nil
+	case numberKindUnsignedInt:
+		if num.uintVal > math.MaxInt64 {
+			return 0, fmt.Errorf("integer boundary overflow in expression %q", expression)
+		}
+		return int64(num.uintVal), nil
+	case numberKindFloat:
+		if num.floatVal == math.Trunc(num.floatVal) && !math.IsNaN(num.floatVal) && !math.IsInf(num.floatVal, 0) {
+			if num.floatVal >= math.MinInt64 && num.floatVal <= math.MaxInt64 {
+				return int64(num.floatVal), nil
+			}
+		}
+		return 0, fmt.Errorf("expression %q did not evaluate to an exact integer: %v", expression, evaluatedVal)
+	}
+	return 0, fmt.Errorf("expression %q did not evaluate to an integer", expression)
+}
+
+// RawNode represents un-evaluated raw template text (|raw|...|/raw|)
+type RawNode struct {
+	Content string
+}
+
+func (node *RawNode) Render(context *Context, writer io.Writer) error {
+	_, err := io.WriteString(writer, node.Content)
+	return err
 }
 
 // ContinueNode represents a |continue| directive
@@ -1056,7 +1090,12 @@ func (node *PWANode) Render(context *Context, writer io.Writer) error {
 	}
 
 	if node.SW != "" && node.SW != "none" && node.SW != "false" {
-		metaTags = append(metaTags, fmt.Sprintf(`<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('%s');});}</script>`, htmlEscape(node.SW)))
+		encodedSW, err := json.Marshal(node.SW)
+		if err != nil {
+			encodedSW = []byte(fmt.Sprintf("%q", node.SW))
+		}
+		script := fmt.Sprintf(`<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register(%s);});}</script>`, string(encodedSW))
+		metaTags = append(metaTags, script)
 	}
 
 	output := strings.Join(metaTags, "\n")

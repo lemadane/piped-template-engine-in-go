@@ -191,7 +191,24 @@ func (engine *Engine) renderRawFragment(buffer *bytes.Buffer, templateOrTemplate
 	context := NewContext(values)
 	context.PushLocal("_engine", engine)
 
+	engine.registerTopLevelMacros(compiled.RootNode, context)
+
 	return fragNode.Render(context, buffer)
+}
+
+func (engine *Engine) registerTopLevelMacros(node Node, context *Context) {
+	if node == nil {
+		return
+	}
+	if blockNode, ok := node.(*BlockNode); ok {
+		for _, child := range blockNode.Children {
+			if macroNode, isMacro := child.(*MacroNode); isMacro {
+				context.PushLocal("_macro_"+macroNode.Name, macroNode)
+			} else {
+				engine.registerTopLevelMacros(child, context)
+			}
+		}
+	}
 }
 
 func (engine *Engine) RenderFragment(writer io.Writer, templateOrTemplateName, fragmentName string, values map[string]any) error {

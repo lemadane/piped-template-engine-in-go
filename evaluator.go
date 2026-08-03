@@ -148,23 +148,38 @@ func (evaluator *Evaluator) evaluateValue(expression string, context *Context) (
 		if err != nil {
 			return nil, err
 		}
-		leftNum, isLeftNum := toFloat64(leftVal)
-		rightNum, isRightNum := toFloat64(rightVal)
+		leftNum, isLeftNum := parseNumberValue(leftVal)
+		rightNum, isRightNum := parseNumberValue(rightVal)
 		if isLeftNum && isRightNum {
 			switch arithDesc.operator {
 			case "+":
-				return leftNum + rightNum, nil
+				if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
+					if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
+						return leftNum.intVal + rightNum.intVal, nil
+					}
+				}
+				return leftNum.asFloat() + rightNum.asFloat(), nil
 			case "-":
-				return leftNum - rightNum, nil
+				if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
+					if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
+						return leftNum.intVal - rightNum.intVal, nil
+					}
+				}
+				return leftNum.asFloat() - rightNum.asFloat(), nil
 			case "*":
-				return leftNum * rightNum, nil
+				if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
+					if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
+						return leftNum.intVal * rightNum.intVal, nil
+					}
+				}
+				return leftNum.asFloat() * rightNum.asFloat(), nil
 			case "/":
-				if rightNum == 0 {
+				if rightNum.asFloat() == 0 {
 					return nil, fmt.Errorf("division by zero")
 				}
-				return leftNum / rightNum, nil
+				return leftNum.asFloat() / rightNum.asFloat(), nil
 			case "%":
-				return int64(leftNum) % int64(rightNum), nil
+				return performModulo(leftNum, rightNum)
 			}
 		}
 	}
@@ -210,6 +225,14 @@ func (evaluator *Evaluator) evaluateValue(expression string, context *Context) (
 	}
 
 	if evaluator.isNumber(trimmedExpression) {
+		if !strings.ContainsAny(trimmedExpression, ".eE") {
+			if parsedInt, err := strconv.ParseInt(trimmedExpression, 10, 64); err == nil {
+				return parsedInt, nil
+			}
+			if parsedUint, err := strconv.ParseUint(trimmedExpression, 10, 64); err == nil {
+				return parsedUint, nil
+			}
+		}
 		parsedFloat, err := strconv.ParseFloat(trimmedExpression, 64)
 		if err != nil {
 			return nil, err
@@ -221,26 +244,11 @@ func (evaluator *Evaluator) evaluateValue(expression string, context *Context) (
 }
 
 func (evaluator *Evaluator) compare(left, right any, operator string) (bool, error) {
-	leftNum, isLeftNum := toFloat64(left)
-	rightNum, isRightNum := toFloat64(right)
+	leftNum, isLeftNum := parseNumberValue(left)
+	rightNum, isRightNum := parseNumberValue(right)
 
 	if isLeftNum && isRightNum {
-		switch operator {
-		case "==":
-			return math.Abs(leftNum-rightNum) < 1e-9, nil
-		case "!=":
-			return math.Abs(leftNum-rightNum) >= 1e-9, nil
-		case ">":
-			return leftNum > rightNum, nil
-		case ">=":
-			return leftNum >= rightNum, nil
-		case "<":
-			return leftNum < rightNum, nil
-		case "<=":
-			return leftNum <= rightNum, nil
-		default:
-			return false, fmt.Errorf("unsupported operator: %s", operator)
-		}
+		return compareNumbers(leftNum, rightNum, operator)
 	}
 
 	// Compare as strings
@@ -1416,4 +1424,183 @@ func (evaluator *Evaluator) findBinaryArithmetic(expression string) *binaryArith
 	}
 
 	return nil
+}
+
+type numberKind int
+
+const (
+	numberKindSignedInt numberKind = iota
+	numberKindUnsignedInt
+	numberKindFloat
+)
+
+type numberValue struct {
+	kind     numberKind
+	intVal   int64
+	uintVal  uint64
+	floatVal float64
+}
+
+func parseNumberValue(value any) (numberValue, bool) {
+	if value == nil {
+		return numberValue{}, false
+	}
+
+	reflectVal := reflect.ValueOf(value)
+	for reflectVal.Kind() == reflect.Ptr || reflectVal.Kind() == reflect.Interface {
+		if reflectVal.IsNil() {
+			return numberValue{}, false
+		}
+		reflectVal = reflectVal.Elem()
+	}
+
+	switch reflectVal.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return numberValue{kind: numberKindSignedInt, intVal: reflectVal.Int()}, true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return numberValue{kind: numberKindUnsignedInt, uintVal: reflectVal.Uint()}, true
+	case reflect.Float32, reflect.Float64:
+		f := reflectVal.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return numberValue{}, false
+		}
+		return numberValue{kind: numberKindFloat, floatVal: f}, true
+	case reflect.String:
+		s := strings.TrimSpace(reflectVal.String())
+		if s == "" {
+			return numberValue{}, false
+		}
+		if !strings.ContainsAny(s, ".eE") {
+			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+				return numberValue{kind: numberKindSignedInt, intVal: i}, true
+			}
+			if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+				return numberValue{kind: numberKindUnsignedInt, uintVal: u}, true
+			}
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return numberValue{}, false
+			}
+			return numberValue{kind: numberKindFloat, floatVal: f}, true
+		}
+	}
+
+	return numberValue{}, false
+}
+
+func (num numberValue) asFloat() float64 {
+	switch num.kind {
+	case numberKindSignedInt:
+		return float64(num.intVal)
+	case numberKindUnsignedInt:
+		return float64(num.uintVal)
+	default:
+		return num.floatVal
+	}
+}
+
+func compareNumbers(left, right numberValue, operator string) (bool, error) {
+	if left.kind != numberKindFloat && right.kind != numberKindFloat {
+		var cmp int
+		if left.kind == numberKindSignedInt && right.kind == numberKindSignedInt {
+			if left.intVal < right.intVal {
+				cmp = -1
+			} else if left.intVal > right.intVal {
+				cmp = 1
+			} else {
+				cmp = 0
+			}
+		} else if left.kind == numberKindUnsignedInt && right.kind == numberKindUnsignedInt {
+			if left.uintVal < right.uintVal {
+				cmp = -1
+			} else if left.uintVal > right.uintVal {
+				cmp = 1
+			} else {
+				cmp = 0
+			}
+		} else if left.kind == numberKindSignedInt && right.kind == numberKindUnsignedInt {
+			if left.intVal < 0 {
+				cmp = -1
+			} else if uint64(left.intVal) < right.uintVal {
+				cmp = -1
+			} else if uint64(left.intVal) > right.uintVal {
+				cmp = 1
+			} else {
+				cmp = 0
+			}
+		} else { // left is Unsigned, right is Signed
+			if right.intVal < 0 {
+				cmp = 1
+			} else if left.uintVal < uint64(right.intVal) {
+				cmp = -1
+			} else if left.uintVal > uint64(right.intVal) {
+				cmp = 1
+			} else {
+				cmp = 0
+			}
+		}
+
+		switch operator {
+		case "==":
+			return cmp == 0, nil
+		case "!=":
+			return cmp != 0, nil
+		case ">":
+			return cmp > 0, nil
+		case ">=":
+			return cmp >= 0, nil
+		case "<":
+			return cmp < 0, nil
+		case "<=":
+			return cmp <= 0, nil
+		default:
+			return false, fmt.Errorf("unsupported operator: %s", operator)
+		}
+	}
+
+	lf := left.asFloat()
+	rf := right.asFloat()
+
+	switch operator {
+	case "==":
+		return lf == rf, nil
+	case "!=":
+		return lf != rf, nil
+	case ">":
+		return lf > rf, nil
+	case ">=":
+		return lf >= rf, nil
+	case "<":
+		return lf < rf, nil
+	case "<=":
+		return lf <= rf, nil
+	default:
+		return false, fmt.Errorf("unsupported operator: %s", operator)
+	}
+}
+
+func performModulo(left, right numberValue) (any, error) {
+	if left.kind == numberKindFloat || right.kind == numberKindFloat {
+		return nil, fmt.Errorf("modulo requires integer operands")
+	}
+
+	var rInt int64
+	if right.kind == numberKindSignedInt {
+		rInt = right.intVal
+	} else {
+		if right.uintVal > math.MaxInt64 {
+			return nil, fmt.Errorf("modulo divisor out of range")
+		}
+		rInt = int64(right.uintVal)
+	}
+
+	if rInt == 0 {
+		return nil, fmt.Errorf("division by zero")
+	}
+
+	if left.kind == numberKindSignedInt {
+		return left.intVal % rInt, nil
+	}
+	return int64(left.uintVal % uint64(rInt)), nil
 }

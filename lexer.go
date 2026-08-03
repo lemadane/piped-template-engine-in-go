@@ -21,11 +21,11 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 	cursor := 0
 
 	for cursor < length {
-		pipeIndex := strings.IndexByte(template[cursor:], '|')
+		pipeIndex := findNextUnescapedPipe(template[cursor:])
 		if pipeIndex == -1 {
 			tokens = append(tokens, Token{
 				Type:     TokenText,
-				Value:    template[cursor:],
+				Value:    unescapePipes(template[cursor:]),
 				Position: cursor,
 			})
 			break
@@ -35,7 +35,7 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 		if absolutePipeIndex > cursor {
 			tokens = append(tokens, Token{
 				Type:     TokenText,
-				Value:    template[cursor:absolutePipeIndex],
+				Value:    unescapePipes(template[cursor:absolutePipeIndex]),
 				Position: cursor,
 			})
 		}
@@ -92,7 +92,7 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 		}
 
 		// Standard expression or directive pipe
-		closingPipe := strings.IndexByte(template[absolutePipeIndex+1:], '|')
+		closingPipe := findNextUnescapedPipe(template[absolutePipeIndex+1:])
 		if closingPipe == -1 {
 			return nil, fmt.Errorf("missing closing pipe for expression starting at index %d", absolutePipeIndex)
 		}
@@ -100,6 +100,24 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 		absoluteClosingPipe := absolutePipeIndex + 1 + closingPipe
 		content := strings.TrimSpace(template[absolutePipeIndex+1 : absoluteClosingPipe])
 		tokenType := lexer.classifyToken(content)
+
+		if tokenType == TokenRaw {
+			rawEnd := strings.Index(template[absoluteClosingPipe+1:], "|/raw|")
+			if rawEnd == -1 {
+				return nil, fmt.Errorf("missing closing |/raw| tag starting at index %d", absolutePipeIndex)
+			}
+			rawContent := template[absoluteClosingPipe+1 : absoluteClosingPipe+1+rawEnd]
+			if strings.Contains(rawContent, "|raw|") {
+				return nil, fmt.Errorf("nested raw block is not allowed at index %d", absolutePipeIndex)
+			}
+			tokens = append(tokens, Token{
+				Type:     TokenText,
+				Value:    unescapePipes(rawContent),
+				Position: absolutePipeIndex,
+			})
+			cursor = absoluteClosingPipe + 1 + rawEnd + len("|/raw|")
+			continue
+		}
 
 		tokens = append(tokens, Token{
 			Type:     tokenType,
@@ -112,8 +130,45 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 	return tokens, nil
 }
 
+func findNextUnescapedPipe(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '|' {
+			// Count preceding backslashes
+			backslashes := 0
+			for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+				backslashes++
+			}
+			if backslashes%2 == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func unescapePipes(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) && (s[i+1] == '|' || s[i+1] == '\\') {
+			sb.WriteByte(s[i+1])
+			i++
+		} else {
+			sb.WriteByte(s[i])
+		}
+	}
+	return sb.String()
+}
+
 func (lexer *Lexer) classifyToken(content string) TokenType {
-	if strings.HasPrefix(content, "if ") {
+	if content == "raw" {
+		return TokenRaw
+	} else if content == "/raw" {
+		return TokenEndRaw
+	} else if strings.HasPrefix(content, "if ") {
 		return TokenIf
 	} else if strings.HasPrefix(content, "else if ") {
 		return TokenElseIf

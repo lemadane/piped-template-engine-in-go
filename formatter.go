@@ -1,46 +1,176 @@
 package pte
 
 import (
-	"fmt"
-	"regexp"
 	"strings"
 )
-
-var commentRegex = regexp.MustCompile(`<!--[\s\S]*?-->`)
-var spaceRegex = regexp.MustCompile(`\s+`)
-var tagSpaceRegex = regexp.MustCompile(`>\s+<`)
-
-var preservedTagRegexes = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)<pre[\s>][\s\S]*?</pre>`),
-	regexp.MustCompile(`(?i)<textarea[\s>][\s\S]*?</textarea>`),
-	regexp.MustCompile(`(?i)<script[\s>][\s\S]*?</script>`),
-	regexp.MustCompile(`(?i)<style[\s>][\s\S]*?</style>`),
-}
 
 func MinifyHTML(htmlString string) string {
 	if htmlString == "" {
 		return ""
 	}
-	processedHtml := commentRegex.ReplaceAllString(htmlString, "")
 
-	var placeholders []string
-	for _, regexPattern := range preservedTagRegexes {
-		processedHtml = regexPattern.ReplaceAllStringFunc(processedHtml, func(matchedTag string) string {
-			placeholderIndex := len(placeholders)
-			placeholders = append(placeholders, matchedTag)
-			return fmt.Sprintf("___PTE_PRESERVED_%d___", placeholderIndex)
-		})
+	var stringBuilder strings.Builder
+	stringBuilder.Grow(len(htmlString))
+
+	length := len(htmlString)
+	characterIndex := 0
+
+	for characterIndex < length {
+		// 1. Check for HTML comment outside raw elements
+		if strings.HasPrefix(htmlString[characterIndex:], "<!--") {
+			commentEnd := strings.Index(htmlString[characterIndex+4:], "-->")
+			if commentEnd != -1 {
+				characterIndex += 4 + commentEnd + 3
+				continue
+			}
+		}
+
+		// 2. Check for raw/preserved element start: <script>, <style>, <pre>, <textarea>
+		if htmlString[characterIndex] == '<' {
+			rawTagName, rawEndTag := matchRawTagStart(htmlString[characterIndex:])
+			if rawTagName != "" {
+				openTagEndIndex := strings.IndexByte(htmlString[characterIndex:], '>')
+				if openTagEndIndex != -1 {
+					absoluteOpenTagEnd := characterIndex + openTagEndIndex + 1
+					stringBuilder.WriteString(htmlString[characterIndex:absoluteOpenTagEnd])
+					characterIndex = absoluteOpenTagEnd
+
+					closingTagIndex := indexOfCaseInsensitive(htmlString[characterIndex:], rawEndTag)
+					if closingTagIndex != -1 {
+						absoluteClosingTagEnd := characterIndex + closingTagIndex + len(rawEndTag)
+						stringBuilder.WriteString(htmlString[characterIndex:absoluteClosingTagEnd])
+						characterIndex = absoluteClosingTagEnd
+						continue
+					} else {
+						stringBuilder.WriteString(htmlString[characterIndex:])
+						break
+					}
+				}
+			}
+		}
+
+		character := htmlString[characterIndex]
+		stringBuilder.WriteByte(character)
+		characterIndex++
 	}
 
-	resultString := spaceRegex.ReplaceAllString(processedHtml, " ")
-	resultString = tagSpaceRegex.ReplaceAllString(resultString, "><")
-	resultString = strings.TrimSpace(resultString)
+	rawResult := stringBuilder.String()
+	return collapseOutsideWhitespace(rawResult)
+}
 
-	for placeholderIndex, placeholderText := range placeholders {
-		resultString = strings.Replace(resultString, fmt.Sprintf("___PTE_PRESERVED_%d___", placeholderIndex), placeholderText, 1)
+func matchRawTagStart(s string) (string, string) {
+	rawTags := []string{"script", "style", "pre", "textarea"}
+	for _, tag := range rawTags {
+		tagLen := len(tag)
+		if len(s) > tagLen+1 && strings.EqualFold(s[1:1+tagLen], tag) {
+			nextChar := s[1+tagLen]
+			if nextChar == ' ' || nextChar == '>' || nextChar == '\t' || nextChar == '\n' || nextChar == '\r' || nextChar == '/' {
+				return tag, "</" + tag + ">"
+			}
+		}
+	}
+	return "", ""
+}
+
+func indexOfCaseInsensitive(s, substr string) int {
+	subLower := strings.ToLower(substr)
+	sLower := strings.ToLower(s)
+	return strings.Index(sLower, subLower)
+}
+
+func collapseOutsideWhitespace(htmlString string) string {
+	var stringBuilder strings.Builder
+	stringBuilder.Grow(len(htmlString))
+
+	length := len(htmlString)
+	characterIndex := 0
+	insideSpace := false
+
+	for characterIndex < length {
+		if htmlString[characterIndex] == '<' {
+			rawTagName, rawEndTag := matchRawTagStart(htmlString[characterIndex:])
+			if rawTagName != "" {
+				openTagEndIndex := strings.IndexByte(htmlString[characterIndex:], '>')
+				if openTagEndIndex != -1 {
+					absoluteOpenTagEnd := characterIndex + openTagEndIndex + 1
+					stringBuilder.WriteString(htmlString[characterIndex:absoluteOpenTagEnd])
+					characterIndex = absoluteOpenTagEnd
+
+					closingTagIndex := indexOfCaseInsensitive(htmlString[characterIndex:], rawEndTag)
+					if closingTagIndex != -1 {
+						absoluteClosingTagEnd := characterIndex + closingTagIndex + len(rawEndTag)
+						stringBuilder.WriteString(htmlString[characterIndex:absoluteClosingTagEnd])
+						characterIndex = absoluteClosingTagEnd
+						insideSpace = false
+						continue
+					} else {
+						stringBuilder.WriteString(htmlString[characterIndex:])
+						break
+					}
+				}
+			}
+		}
+
+		character := htmlString[characterIndex]
+		if isWhitespaceChar(character) {
+			if !insideSpace {
+				stringBuilder.WriteByte(' ')
+				insideSpace = true
+			}
+			characterIndex++
+		} else {
+			stringBuilder.WriteByte(character)
+			insideSpace = false
+			characterIndex++
+		}
 	}
 
-	return resultString
+	result := stringBuilder.String()
+	return collapseTagSpacesOutsideRaw(result)
+}
+
+func collapseTagSpacesOutsideRaw(htmlString string) string {
+	var stringBuilder strings.Builder
+	stringBuilder.Grow(len(htmlString))
+
+	length := len(htmlString)
+	characterIndex := 0
+
+	for characterIndex < length {
+		if htmlString[characterIndex] == '<' {
+			rawTagName, rawEndTag := matchRawTagStart(htmlString[characterIndex:])
+			if rawTagName != "" {
+				openTagEndIndex := strings.IndexByte(htmlString[characterIndex:], '>')
+				if openTagEndIndex != -1 {
+					absoluteOpenTagEnd := characterIndex + openTagEndIndex + 1
+					stringBuilder.WriteString(htmlString[characterIndex:absoluteOpenTagEnd])
+					characterIndex = absoluteOpenTagEnd
+
+					closingTagIndex := indexOfCaseInsensitive(htmlString[characterIndex:], rawEndTag)
+					if closingTagIndex != -1 {
+						absoluteClosingTagEnd := characterIndex + closingTagIndex + len(rawEndTag)
+						stringBuilder.WriteString(htmlString[characterIndex:absoluteClosingTagEnd])
+						characterIndex = absoluteClosingTagEnd
+						continue
+					} else {
+						stringBuilder.WriteString(htmlString[characterIndex:])
+						break
+					}
+				}
+			}
+		}
+
+		if htmlString[characterIndex] == '>' && characterIndex+2 < length && htmlString[characterIndex+1] == ' ' && htmlString[characterIndex+2] == '<' {
+			stringBuilder.WriteString("><")
+			characterIndex += 3
+			continue
+		}
+
+		stringBuilder.WriteByte(htmlString[characterIndex])
+		characterIndex++
+	}
+
+	return strings.TrimSpace(stringBuilder.String())
 }
 
 func PrettifyHTML(htmlString string) string {

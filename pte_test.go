@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -549,7 +551,7 @@ func TestPWANode(t *testing.T) {
 	if !strings.Contains(res, `link rel="apple-touch-icon" href="/icon-192.png"`) {
 		t.Errorf("expected icon tag, got %q", res)
 	}
-	if !strings.Contains(res, `navigator.serviceWorker.register('/sw.js')`) {
+	if !strings.Contains(res, `navigator.serviceWorker.register("/sw.js")`) {
 		t.Errorf("expected service worker registration script, got %q", res)
 	}
 
@@ -573,7 +575,7 @@ func TestPWANode(t *testing.T) {
 	if !strings.Contains(resAlias, `link rel="apple-touch-icon" href="/touch.png"`) {
 		t.Errorf("expected touch-icon alias tag, got %q", resAlias)
 	}
-	if !strings.Contains(resAlias, `navigator.serviceWorker.register('/sw-custom.js')`) {
+	if !strings.Contains(resAlias, `navigator.serviceWorker.register("/sw-custom.js")`) {
 		t.Errorf("expected service-worker alias script, got %q", resAlias)
 	}
 }
@@ -2772,5 +2774,352 @@ func TestIssue10FragmentFormattingAndAtomicOutputSuite(t *testing.T) {
 			}()
 		}
 		wg.Wait()
+	})
+}
+
+// Regression Test Suites for Remaining Issues #1 through #8
+
+func TestRemainingIssue1ModuloByZero(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("Modulo by zero returns error", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|0%0|", nil)
+		if err == nil {
+			t.Fatal("expected error for 0%0, got nil")
+		}
+		if !strings.Contains(err.Error(), "division by zero") {
+			t.Errorf("expected division by zero error, got %v", err)
+		}
+	})
+
+	t.Run("Modulo with fractional divisor returns error", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|10%0.5|", nil)
+		if err == nil {
+			t.Fatal("expected error for 10%0.5, got nil")
+		}
+	})
+
+	t.Run("Modulo with fractional dividend returns error", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|10.5%2|", nil)
+		if err == nil {
+			t.Fatal("expected error for 10.5%2, got nil")
+		}
+	})
+
+	t.Run("Valid modulo returns exact integer", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|10%3|", nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "1" {
+			t.Errorf("expected '1', got %q", got)
+		}
+	})
+}
+
+func TestRemainingIssue2LiteralPipesAndRawBlocks(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("Escaped single and double pipes", func(t *testing.T) {
+		var buf bytes.Buffer
+		tmpl := `<div x-text="primary \|\| fallback"></div>`
+		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := `<div x-text="primary || fallback"></div>`
+		if got := buf.String(); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("Raw block emits unparsed content", func(t *testing.T) {
+		tmpl := `|raw|
+<div x-text="primary || fallback"></div>
+<script>
+    const flags = left | right;
+</script>
+|/raw|`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
+			t.Fatalf("unexpected error rendering raw block: %v", err)
+		}
+		expected := "\n<div x-text=\"primary || fallback\"></div>\n<script>\n    const flags = left | right;\n</script>\n"
+		if got := buf.String(); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("Adjacent directives syntax preserved", func(t *testing.T) {
+		tmpl := `|if active||name||/if|`
+		var buf bytes.Buffer
+		data := map[string]any{"active": true, "name": "Alice"}
+		if err := engine.RenderString(&buf, tmpl, data); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := buf.String(); got != "Alice" {
+			t.Errorf("expected 'Alice', got %q", got)
+		}
+	})
+
+	t.Run("Unclosed raw block error", func(t *testing.T) {
+		tmpl := `|raw| unclosed raw text`
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, tmpl, nil)
+		if err == nil || !strings.Contains(err.Error(), "missing closing |/raw| tag") {
+			t.Fatalf("expected missing closing |/raw| error, got %v", err)
+		}
+	})
+
+	t.Run("Nested raw block error", func(t *testing.T) {
+		tmpl := `|raw| outer |raw| inner |/raw| |/raw|`
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, tmpl, nil)
+		if err == nil || !strings.Contains(err.Error(), "nested raw block") {
+			t.Fatalf("expected nested raw block error, got %v", err)
+		}
+	})
+}
+
+func TestRemainingIssue3LargeIntegerPrecision(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("64-bit integer exact comparison", func(t *testing.T) {
+		data := map[string]any{
+			"actual": uint64(9007199254740993),
+			"lower":  uint64(9007199254740992),
+		}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|if actual == lower|wrong|else|correct|/if|", data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "correct" {
+			t.Errorf("large integers 9007199254740993 and 9007199254740992 must compare unequal, got %q", got)
+		}
+	})
+
+	t.Run("Large integer range bounds", func(t *testing.T) {
+		data := map[string]any{
+			"start": int64(9007199254740993),
+			"end":   int64(9007199254740993),
+		}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from start to end||i||/for|", data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "9007199254740993" {
+			t.Errorf("expected '9007199254740993', got %q", got)
+		}
+	})
+
+	t.Run("Switch case large integer matching", func(t *testing.T) {
+		data := map[string]any{
+			"val": uint64(9007199254740993),
+		}
+		tmpl := "|switch val|\n|case 9007199254740993|\nmatch\n|default|\nno\n|/switch|"
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "match" {
+			t.Errorf("expected 'match', got %q", got)
+		}
+	})
+}
+
+func TestRemainingIssue4ForRangeFractionalAndOverflow(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("Fractional range start rejected", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|for i from 1.9 to 3||i||/for|", nil)
+		if err == nil {
+			t.Fatal("expected error for fractional range start 1.9")
+		}
+	})
+
+	t.Run("Fractional range end rejected", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|for i from 1 to 3.9||i||/for|", nil)
+		if err == nil {
+			t.Fatal("expected error for fractional range end 3.9")
+		}
+	})
+
+	t.Run("Fractional step rejected", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|for i from 1 to 5 step 1.5||i||/for|", nil)
+		if err == nil {
+			t.Fatal("expected error for fractional step 1.5")
+		}
+	})
+
+	t.Run("Exact float 3.0 accepted", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 1.0 to 3.0||i||/for|", nil); err != nil {
+			t.Fatalf("unexpected error for exact floats 1.0 to 3.0: %v", err)
+		}
+		if got := buf.String(); got != "123" {
+			t.Errorf("expected '123', got %q", got)
+		}
+	})
+
+	t.Run("Ascending boundary MaxInt64 loop terminates", func(t *testing.T) {
+		data := map[string]any{
+			"start": int64(math.MaxInt64 - 1),
+			"end":   int64(math.MaxInt64),
+		}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from start to end||i||separator|, |/separator||/for|", data); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := fmt.Sprintf("%d, %d", math.MaxInt64-1, math.MaxInt64)
+		if got := buf.String(); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("Descending boundary MinInt64 loop terminates", func(t *testing.T) {
+		data := map[string]any{
+			"start": int64(math.MinInt64 + 1),
+			"end":   int64(math.MinInt64),
+		}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from start to end||i||separator|, |/separator||/for|", data); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := fmt.Sprintf("%d, %d", math.MinInt64+1, math.MinInt64)
+		if got := buf.String(); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+}
+
+func TestRemainingIssue5And6MinifierRawElementsAndPlaceholders(t *testing.T) {
+	t.Run("Script containing HTML comment string preserved", func(t *testing.T) {
+		html := "<script>\nconst marker = \"<!--must remain-->\";\n</script>"
+		min := MinifyHTML(html)
+		if !strings.Contains(min, "<!--must remain-->") {
+			t.Errorf("MinifyHTML removed comment-like string inside script: %s", min)
+		}
+	})
+
+	t.Run("Placeholder-like literal string preserved without collision", func(t *testing.T) {
+		html := "___PTE_PRESERVED_0___ <pre>  keep spaces  </pre>"
+		min := MinifyHTML(html)
+		if !strings.Contains(min, "___PTE_PRESERVED_0___") {
+			t.Errorf("MinifyHTML corrupted placeholder-like text: %s", min)
+		}
+		if !strings.Contains(min, "<pre>  keep spaces  </pre>") {
+			t.Errorf("MinifyHTML corrupted pre text: %s", min)
+		}
+	})
+
+	t.Run("MinifyHTML idempotency", func(t *testing.T) {
+		html := `
+<div>
+    <h1> Title </h1>
+    <script> let x = " <!-- comment --> "; </script>
+    <pre>  formatted  </pre>
+</div>`
+		min1 := MinifyHTML(html)
+		min2 := MinifyHTML(min1)
+		if min1 != min2 {
+			t.Errorf("MinifyHTML is not idempotent!\nMin1: %q\nMin2: %q", min1, min2)
+		}
+	})
+}
+
+func TestRemainingIssue7PWAServiceWorkerJSONEncoding(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("Service worker path with query params JSON encoded", func(t *testing.T) {
+		tmpl := `|pwa sw='/sw.js?cache=1&scope=app'|`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		out := buf.String()
+		if strings.Contains(out, "&amp;") {
+			t.Errorf("PWA service worker URL inside script must not contain HTML entity &amp;: %s", out)
+		}
+		if !strings.Contains(out, `navigator.serviceWorker.register("/sw.js?cache=1\u0026scope=app")`) {
+			t.Errorf("expected JSON-encoded service worker URL, got %s", out)
+		}
+	})
+
+	t.Run("PWA sw='none' disables registration", func(t *testing.T) {
+		tmpl := `|pwa sw='none'|`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(buf.String(), "serviceWorker.register") {
+			t.Errorf("expected no serviceWorker.register call for sw='none', got %s", buf.String())
+		}
+	})
+}
+
+func TestRemainingIssue8FragmentMacroScoping(t *testing.T) {
+	templates := map[string]string{
+		"macro_page": `
+|macro badge(text)|<b>|text|</b>|/macro|
+
+|fragment result|
+|call badge('OK')|
+|/fragment|
+`,
+	}
+	engine := NewEngine("", WithInMemoryTemplates(templates))
+
+	t.Run("RenderFragment executes top-level macro declared before fragment", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderFragment(&buf, "macro_page", "result", nil); err != nil {
+			t.Fatalf("RenderFragment error: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<b>OK</b>" {
+			t.Errorf("expected '<b>OK</b>', got %q", got)
+		}
+	})
+
+	t.Run("RenderFragments executes top-level macro", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderFragments(&buf, "macro_page", []string{"result"}, nil); err != nil {
+			t.Fatalf("RenderFragments error: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<b>OK</b>" {
+			t.Errorf("expected '<b>OK</b>', got %q", got)
+		}
+	})
+}
+
+func FuzzGeneralTemplateRendering(f *testing.F) {
+	seeds := []string{
+		"plain text",
+		"|name|",
+		"|0%0|",
+		"|if active|yes|else|no|/if|",
+		"|each item in items||item||/each|",
+		"|switch role||case 'admin'|yes|default|no|/switch|",
+		"|# comment |",
+		`<div x-text="a \|\| b"></div>`,
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	engine := NewEngine("")
+
+	f.Fuzz(func(t *testing.T, template string) {
+		var output bytes.Buffer
+		_ = engine.RenderString(&output, template, map[string]any{
+			"name":   "PTE",
+			"active": true,
+			"role":   "admin",
+			"items":  []int{1, 2, 3},
+		})
 	})
 }
