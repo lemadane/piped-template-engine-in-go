@@ -188,8 +188,6 @@ func (parser *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopTo
 		switch token.Type {
 		case TokenText:
 			nodes = append(nodes, NewTextNode(token.Value))
-		case TokenRaw:
-			nodes = append(nodes, &RawNode{Content: token.Value})
 		case TokenComment:
 			// Ignore comments
 		case TokenExpression:
@@ -226,10 +224,22 @@ func (parser *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopTo
 				return nil, fmt.Errorf("|break| outside a loop at %d", token.Position)
 			}
 			nodes = append(nodes, &BreakNode{Position: token.Position})
-		case TokenCase, TokenDefault, TokenEndRaw:
+		case TokenCase, TokenDefault:
 			return nil, fmt.Errorf("misplaced |%s| directive at position %d", token.Value, token.Position)
-		case TokenEndFor, TokenEndEach, TokenEndIf, TokenEndSection, TokenEndComponent, TokenEndSlot, TokenEndMacro, TokenEndFragment, TokenEndMinify, TokenEndAttempt, TokenEndSwitch, TokenEndSeparator:
+		case TokenEndFor, TokenEndEach, TokenEndIf, TokenEndSection, TokenEndComponent, TokenEndSlot, TokenEndMacro, TokenEndFragment, TokenEndMinify, TokenEndAttempt, TokenEndSwitch, TokenEndSeparator, TokenEndJS, TokenEndCSS:
 			return nil, fmt.Errorf("misplaced loop or block directive |%s| at %d", token.Value, token.Position)
+		case TokenJS:
+			jsNode, err := parser.parseJS(token, cursor, metadata, loopDepth)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, jsNode)
+		case TokenCSS:
+			cssNode, err := parser.parseCSS(token, cursor, metadata, loopDepth)
+			if err != nil {
+				return nil, err
+			}
+			nodes = append(nodes, cssNode)
 		case TokenModel:
 			modelType := strings.TrimSpace(token.Value[len("model "):])
 			nodes = append(nodes, &ModelNode{ModelType: modelType})
@@ -1510,4 +1520,38 @@ func (parser *Parser) parseAlpineAttr(token Token) (Node, error) {
 		Directive: fullDirectiveName,
 		Value:     expressionString,
 	}, nil
+}
+
+func (parser *Parser) parseJS(token Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	val := strings.TrimSpace(token.Value)
+	if val == "js" {
+		body, err := parser.parseBlockWithLoopDepthDirect(cursor, TokenEndJS, metadata, loopDepth, false)
+		if err != nil {
+			return nil, err
+		}
+		if cursor.hasNext() && cursor.peek().Type == TokenEndJS {
+			cursor.next()
+			return &JSBlockNode{Body: body}, nil
+		}
+		return nil, fmt.Errorf("missing closing |/js| tag starting at index %d", token.Position)
+	}
+	exprText := strings.TrimSpace(val[len("js"):])
+	return &JSExpressionNode{Expression: exprText, Evaluator: parser.evaluator}, nil
+}
+
+func (parser *Parser) parseCSS(token Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
+	val := strings.TrimSpace(token.Value)
+	if val == "css" {
+		body, err := parser.parseBlockWithLoopDepthDirect(cursor, TokenEndCSS, metadata, loopDepth, false)
+		if err != nil {
+			return nil, err
+		}
+		if cursor.hasNext() && cursor.peek().Type == TokenEndCSS {
+			cursor.next()
+			return &CSSBlockNode{Body: body}, nil
+		}
+		return nil, fmt.Errorf("missing closing |/css| tag starting at index %d", token.Position)
+	}
+	exprText := strings.TrimSpace(val[len("css"):])
+	return &CSSExpressionNode{Expression: exprText, Evaluator: parser.evaluator}, nil
 }

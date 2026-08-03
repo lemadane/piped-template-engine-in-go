@@ -2972,55 +2972,6 @@ func TestRemainingIssue2LiteralPipesAndRawBlocks(t *testing.T) {
 		}
 	})
 
-	t.Run("Raw block exact byte-for-byte rendering", func(t *testing.T) {
-		rawTmpl := `|raw|C:\\templates\|literal|/raw|`
-		var buf bytes.Buffer
-		if err := engine.RenderString(&buf, rawTmpl, nil); err != nil {
-			t.Fatal(err)
-		}
-		expectedRaw := `C:\\templates\|literal`
-		if got := buf.String(); got != expectedRaw {
-			t.Errorf("raw block expected %q, got %q", expectedRaw, got)
-		}
-
-		complexRaw := `|raw|
-|if thisLooksLikePTE|
-C:\\templates\|literal
-<div x-text="a || b"></div>
-|# this must remain literal |
-|/raw|`
-		buf.Reset()
-		if err := engine.RenderString(&buf, complexRaw, nil); err != nil {
-			t.Fatal(err)
-		}
-		expectedComplex := "\n|if thisLooksLikePTE|\nC:\\\\templates\\|literal\n<div x-text=\"a || b\"></div>\n|# this must remain literal |\n"
-		if got := buf.String(); got != expectedComplex {
-			t.Errorf("complex raw block expected %q, got %q", expectedComplex, got)
-		}
-	})
-
-	t.Run("Empty raw block renders 0 bytes", func(t *testing.T) {
-		var buf bytes.Buffer
-		if err := engine.RenderString(&buf, "|raw||/raw|", nil); err != nil {
-			t.Fatal(err)
-		}
-		if got := buf.String(); got != "" {
-			t.Errorf("empty raw block expected '', got %q", got)
-		}
-	})
-
-	t.Run("Multiple raw blocks in single template", func(t *testing.T) {
-		tmpl := `|raw|first \| raw|/raw| middle |raw|second \| raw|/raw|`
-		var buf bytes.Buffer
-		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
-			t.Fatal(err)
-		}
-		expected := `first \| raw middle second \| raw`
-		if got := buf.String(); got != expected {
-			t.Errorf("multiple raw blocks expected %q, got %q", expected, got)
-		}
-	})
-
 	t.Run("Adjacent directives syntax preserved", func(t *testing.T) {
 		tmpl := `|if active||name||/if|`
 		var buf bytes.Buffer
@@ -3033,40 +2984,11 @@ C:\\templates\|literal
 		}
 	})
 
-	t.Run("Unclosed raw block error", func(t *testing.T) {
-		tmpl := `|raw| unclosed raw text`
-		var buf bytes.Buffer
-		err := engine.RenderString(&buf, tmpl, nil)
-		if err == nil || !strings.Contains(err.Error(), "missing closing |/raw| tag") {
-			t.Fatalf("expected missing closing |/raw| error, got %v", err)
-		}
-	})
-
-	t.Run("Nested raw block error", func(t *testing.T) {
-		tmpl := `|raw| outer |raw| inner |/raw| |/raw|`
-		var buf bytes.Buffer
-		err := engine.RenderString(&buf, tmpl, nil)
-		if err == nil || !strings.Contains(err.Error(), "nested raw block") {
-			t.Fatalf("expected nested raw block error, got %v", err)
-		}
-	})
-
-	t.Run("Stray /raw directive error", func(t *testing.T) {
-		tmpl := `hello |/raw| world`
-		var buf bytes.Buffer
-		err := engine.RenderString(&buf, tmpl, nil)
-		if err == nil || !strings.Contains(err.Error(), "misplaced |/raw| directive") {
-			t.Fatalf("expected misplaced |/raw| directive error, got %v", err)
-		}
-	})
-
 	t.Run("Concurrent raw block rendering", func(t *testing.T) {
-		source := `|raw|
-<script>
-    const res = primary || fallback;
+		source := `<script>
+    const res = primary \|\| fallback;
     const path = "C:\\temp\\file.txt";
 </script>
-|/raw|
 |if active|Hello |name|!|/if|`
 		compiled, err := engine.Compile(source)
 		if err != nil {
@@ -3106,13 +3028,11 @@ func TestIssue2EndToEndFullEnginePipelineRegression(t *testing.T) {
     <div id="path-container">Path: C:\app\templates\page.pte</div>
     <div id="unc-container">UNC: \\server\share\folder</div>
     <div x-data="{ open: false }" x-show="open \|\| loading">JS Escaped</div>
-    |raw|
     <script>
         const rawPath = "C:\\app\\templates\\page.pte";
-        const isReady = primary || fallback;
+        const isReady = primary \|\| fallback;
         const comment = "<!-- must not be stripped -->";
     </script>
-    |/raw|
     |if active||user.name||/if|
     |fragment status|
         <span>Status: |status|</span>
@@ -3186,11 +3106,9 @@ func TestIssue2EndToEndFullEnginePipelineRegression(t *testing.T) {
 <div>
     <h1>Route Test</h1>
     <p>Windows: C:\\routes\\page.pte</p>
-    |raw|
     <script>
-        const routeJS = a || b;
+        const routeJS = a \|\| b;
     </script>
-    |/raw|
 </div>`
 		if err := os.WriteFile(filepath.Join(routesDir, "+page.pte"), []byte(routeContent), 0644); err != nil {
 			t.Fatal(err)
@@ -3905,11 +3823,9 @@ func TestAll34FeaturesEndToEndMasterSuite(t *testing.T) {
         |display formUser.bio|
         |editor formUser.bio|
 
-        |raw|
         <script>
-            const unparsed = "C:\\app\\path" || false;
+            const unparsed = "C:\\app\\path" \|\| false;
         </script>
-        |/raw|
 
         |attempt|
             <div>|user.MissingField.Value|</div>
@@ -4081,10 +3997,6 @@ func FuzzLiteralPipeAndRawLexer(f *testing.F) {
 		`\|\|`,
 		`\\|`,
 		`\\\|`,
-		`|raw|a || b|/raw|`,
-		`|raw|C:\\temp\|value|/raw|`,
-		`|if true||name||/if|`,
-		`|raw|unclosed`,
 	}
 
 	for _, seed := range seeds {
@@ -4094,17 +4006,9 @@ func FuzzLiteralPipeAndRawLexer(f *testing.F) {
 	lexer := NewLexer()
 
 	f.Fuzz(func(t *testing.T, template string) {
-		tokens, err := lexer.Tokenize(template)
+		_, err := lexer.Tokenize(template)
 		if err != nil {
 			return
-		}
-
-		for _, tok := range tokens {
-			if tok.Type == TokenRaw {
-				if strings.Contains(tok.Value, "|raw|") {
-					t.Errorf("TokenRaw contained nested raw block: %s", tok.Value)
-				}
-			}
 		}
 	})
 }
@@ -4262,7 +4166,6 @@ func FuzzHTMLMinifierContextAware(f *testing.F) {
 		`<!-- unterminated`,
 		`<SCRIPT>let a = '<!-- unicode ❤️ -->';</SCRIPT>`,
 		`<STYLE>body { content: '<!-- café -->'; }</STYLE>`,
-		`|raw|<div title="<!--keep-->">PTE raw</div>|/raw|`,
 		`<div attr=unquoted><!--comment--><span>text</span></div>`,
 		`<div attr="quote > text" attr2='single > quote'><!-- --></div>`,
 		`<a href="url?a=1&b=2" title="<!-- comment -->">Unicode: 你好</a>`,

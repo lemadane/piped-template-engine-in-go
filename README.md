@@ -255,15 +255,58 @@ func main() {
 }
 ```
 
+## Semantic JavaScript and CSS Directives
+
+PTEGo provides semantic directives for embedding inline or block JavaScript and CSS assets into templates.
+
+### 1. Semantic JavaScript Directives (`|js|`)
+
+- **Inline Expression (`|js expr|`)**: Evaluates `expr` and wraps the output in `<script>...</script>`.
+  ```pte
+  |js "console.log('Template Initialized');"|
+  ```
+  Rendered output:
+  ```html
+  <script>console.log('Template Initialized');</script>
+  ```
+
+- **Block Directive (`|js|...|/js|`)**: Renders child template nodes inside a `<script>` tag.
+  ```pte
+  |js|
+  const user = "|username|";
+  console.log("Logged in:", user);
+  |/js|
+  ```
+
+### 2. Semantic CSS Directives (`|css|`)
+
+- **Inline Expression (`|css expr|`)**: Evaluates `expr` and wraps the output in `<style>...</style>`.
+  ```pte
+  |css "body { margin: 0; padding: 0; }"|
+  ```
+  Rendered output:
+  ```html
+  <style>body { margin: 0; padding: 0; }</style>
+  ```
+
+- **Block Directive (`|css|...|/css|`)**: Renders child template nodes inside a `<style>` tag.
+  ```pte
+  |css|
+  .button {
+      background-color: |themeColor|;
+  }
+  |/css|
+  ```
+
 ---
 
-## Literal Pipes and Raw Blocks
+## Literal Pipes
 
-PTEGo provides two mechanisms for working with literal pipe characters (`|`), raw JavaScript/AlpineJS code, and un-evaluated text.
+PTEGo provides mechanisms for working with literal pipe characters (`|`).
 
-### 1. Escaped Literal Pipes (`\|`)
+### Escaped Literal Pipes (`\|`)
 
-Outside raw blocks, precede a pipe character with a single backslash (`\|`) to output a literal pipe character:
+Precede a pipe character with a single backslash (`\|`) to output a literal pipe character:
 
 ```pte
 <div x-text="primary \|\| fallback"></div>
@@ -275,7 +318,7 @@ Rendered output:
 <div x-text="primary || fallback"></div>
 ```
 
-#### Backslash Parity Rules Outside Raw Blocks
+#### Backslash Parity Rules
 
 Backslash escaping before a pipe (`|`) follows parity rules:
 
@@ -285,31 +328,6 @@ Backslash escaping before a pipe (`|`) follows parity rules:
 - **Even backslash count (`\\|`, `\\\\|`)**: The pipe is treated as a directive delimiter. All backslashes are preserved.
   - `\\|name|` -> `\\Alice` (when `name == "Alice"`)
 - **Ordinary backslashes**: Backslashes not preceding a pipe (such as Windows paths `C:\templates\page.pte`, UNC paths `\\server\share`, JSON, or regular expressions) remain 100% untouched.
-
-### 2. Raw Blocks (`|raw|...|/raw|`)
-
-Use `|raw|...|/raw|` blocks to enclose regions of template text that should be treated as literal content without evaluation:
-
-```pte
-|raw|
-<div x-text="primary || fallback"></div>
-<script>
-    const flags = left | right;
-    const path = "C:\\temp\\file";
-</script>
-|/raw|
-```
-
-Inside a raw block:
-- Pipes (`|`), PTE expressions, comments, and directives are **not** evaluated.
-- Backslashes are **not** unescaped or modified.
-- Whitespace, newlines, and content are preserved **byte-for-byte** during template parsing and compilation.
-
-#### Technical Details & Limitations:
-- **Template Parsing Preservation**: Raw block contents are preserved byte-for-byte by the template parser and AST renderer. Optional engine-level post-processing (`WithMinify` or `WithPrettify`) operates on the final HTML stream as a separate output stage.
-- **Closing Delimiter Limitation**: A literal closing sequence `|/raw|` cannot appear unescaped inside a raw block.
-- **Nested Raw Blocks**: Nested raw blocks (`|raw|...|raw|...|/raw|`) are not supported and produce a compilation error (`nested raw block is not allowed`).
-- **Adjacent Directives**: Adjacent PTE directives (`|if active||name||/if|`) continue to work seamlessly without requiring raw block wrapping.
 
 ---
 

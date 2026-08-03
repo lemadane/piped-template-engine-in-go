@@ -53,8 +53,10 @@ const (
 	TokenEndFor       TokenType = "END_FOR"
 	TokenContinue     TokenType = "CONTINUE"
 	TokenBreak        TokenType = "BREAK"
-	TokenRaw          TokenType = "RAW"
-	TokenEndRaw       TokenType = "END_RAW"
+	TokenJS           TokenType = "JS"
+	TokenEndJS        TokenType = "END_JS"
+	TokenCSS          TokenType = "CSS"
+	TokenEndCSS       TokenType = "END_CSS"
 )
 
 type Token struct {

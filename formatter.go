@@ -33,18 +33,7 @@ func stripCommentsContextAware(htmlString string) string {
 	i := 0
 
 	for i < length {
-		// 1. Check for PTE raw block (|raw| ... |/raw|)
-		if strings.HasPrefix(htmlString[i:], "|raw|") {
-			rawEnd := strings.Index(htmlString[i+5:], "|/raw|")
-			if rawEnd != -1 {
-				endPos := i + 5 + rawEnd + 6
-				sb.WriteString(htmlString[i:endPos])
-				i = endPos
-				continue
-			}
-		}
-
-		// 2. Check for raw elements (<script>, <style>, <pre>, <textarea>)
+		// 1. Check for raw elements (<script>, <style>, <pre>, <textarea>)
 		if htmlString[i] == '<' {
 			rawTag, rawEndTag := matchRawTagStart(htmlString[i:])
 			if rawTag != "" {

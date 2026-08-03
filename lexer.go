@@ -40,22 +40,6 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 			})
 		}
 
-		// Check for comment |-- ... --|
-		if strings.HasPrefix(template[absolutePipeIndex:], "|--") {
-			commentEnd := strings.Index(template[absolutePipeIndex+3:], "--|")
-			if commentEnd == -1 {
-				return nil, fmt.Errorf("unclosed comment starting at index %d", absolutePipeIndex)
-			}
-			absoluteCommentEnd := absolutePipeIndex + 3 + commentEnd
-			tokens = append(tokens, Token{
-				Type:     TokenComment,
-				Value:    template[absolutePipeIndex+3 : absoluteCommentEnd],
-				Position: absolutePipeIndex,
-			})
-			cursor = absoluteCommentEnd + 3
-			continue
-		}
-
 		// Check for comment |# ... #| or |# ... |
 		if strings.HasPrefix(template[absolutePipeIndex:], "|#") {
 			isBlock := false
@@ -101,23 +85,6 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 		content := strings.TrimSpace(template[absolutePipeIndex+1 : absoluteClosingPipe])
 		tokenType := lexer.classifyToken(content)
 
-		if tokenType == TokenRaw {
-			rawEnd := strings.Index(template[absoluteClosingPipe+1:], "|/raw|")
-			if rawEnd == -1 {
-				return nil, fmt.Errorf("missing closing |/raw| tag starting at index %d", absolutePipeIndex)
-			}
-			rawContent := template[absoluteClosingPipe+1 : absoluteClosingPipe+1+rawEnd]
-			if strings.Contains(rawContent, "|raw|") {
-				return nil, fmt.Errorf("nested raw block is not allowed at index %d", absolutePipeIndex)
-			}
-			tokens = append(tokens, Token{
-				Type:     TokenRaw,
-				Value:    rawContent,
-				Position: absolutePipeIndex,
-			})
-			cursor = absoluteClosingPipe + 1 + rawEnd + len("|/raw|")
-			continue
-		}
 
 		tokens = append(tokens, Token{
 			Type:     tokenType,
@@ -188,11 +155,7 @@ func unescapePipes(s string) string {
 }
 
 func (lexer *Lexer) classifyToken(content string) TokenType {
-	if content == "raw" {
-		return TokenRaw
-	} else if content == "/raw" {
-		return TokenEndRaw
-	} else if strings.HasPrefix(content, "if ") {
+	if strings.HasPrefix(content, "if ") {
 		return TokenIf
 	} else if strings.HasPrefix(content, "else if ") {
 		return TokenElseIf
@@ -286,6 +249,14 @@ func (lexer *Lexer) classifyToken(content string) TokenType {
 		return TokenState
 	} else if strings.HasPrefix(content, "alpine-") {
 		return TokenAlpineAttr
+	} else if content == "js" || strings.HasPrefix(content, "js ") {
+		return TokenJS
+	} else if content == "/js" {
+		return TokenEndJS
+	} else if content == "css" || strings.HasPrefix(content, "css ") {
+		return TokenCSS
+	} else if content == "/css" {
+		return TokenEndCSS
 	}
 	return TokenExpression
 }

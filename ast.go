@@ -730,6 +730,80 @@ func (node *MinifyNode) Render(context *Context, writer io.Writer) error {
 	return err
 }
 
+// JSBlockNode renders template content inside <script>...</script>
+type JSBlockNode struct {
+	Body Node
+}
+
+func (node *JSBlockNode) Render(context *Context, writer io.Writer) error {
+	var buffer bytes.Buffer
+	if node.Body != nil {
+		if err := node.Body.Render(context, &buffer); err != nil {
+			return err
+		}
+	}
+	output := fmt.Sprintf("<script>%s</script>", buffer.String())
+	_, err := io.WriteString(writer, output)
+	return err
+}
+
+// JSExpressionNode evaluates an expression and wraps it in <script>...</script>
+type JSExpressionNode struct {
+	Expression string
+	Evaluator  *Evaluator
+}
+
+func (node *JSExpressionNode) Render(context *Context, writer io.Writer) error {
+	val, err := node.Evaluator.Evaluate(node.Expression, context)
+	if err != nil {
+		return err
+	}
+	valStr := ""
+	if val != nil {
+		valStr = fmt.Sprintf("%v", val)
+	}
+	output := fmt.Sprintf("<script>%s</script>", valStr)
+	_, err = io.WriteString(writer, output)
+	return err
+}
+
+// CSSBlockNode renders template content inside <style>...</style>
+type CSSBlockNode struct {
+	Body Node
+}
+
+func (node *CSSBlockNode) Render(context *Context, writer io.Writer) error {
+	var buffer bytes.Buffer
+	if node.Body != nil {
+		if err := node.Body.Render(context, &buffer); err != nil {
+			return err
+		}
+	}
+	output := fmt.Sprintf("<style>%s</style>", buffer.String())
+	_, err := io.WriteString(writer, output)
+	return err
+}
+
+// CSSExpressionNode evaluates an expression and wraps it in <style>...</style>
+type CSSExpressionNode struct {
+	Expression string
+	Evaluator  *Evaluator
+}
+
+func (node *CSSExpressionNode) Render(context *Context, writer io.Writer) error {
+	val, err := node.Evaluator.Evaluate(node.Expression, context)
+	if err != nil {
+		return err
+	}
+	valStr := ""
+	if val != nil {
+		valStr = fmt.Sprintf("%v", val)
+	}
+	output := fmt.Sprintf("<style>%s</style>", valStr)
+	_, err = io.WriteString(writer, output)
+	return err
+}
+
 // ModelNode stores model declarations
 type ModelNode struct {
 	ModelType string
