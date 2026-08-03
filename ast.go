@@ -436,19 +436,37 @@ func (n *EachNode) toIterable(value any) ([]any, bool, int) {
 	return []any{value}, false, 1
 }
 
-// CaseBlock represents a switch case branch
-type CaseBlock struct {
-	Expression  string
-	Body        Node
-	Fallthrough bool
+type SwitchClauseKind string
+
+const (
+	SwitchCaseClause    SwitchClauseKind = "CASE"
+	SwitchDefaultClause SwitchClauseKind = "DEFAULT"
+)
+
+// SwitchClause represents a single case or default branch in a switch statement
+type SwitchClause struct {
+	Kind              SwitchClauseKind
+	Expression        string
+	Body              Node
+	AllowsFallthrough bool
+	FallthroughPos    int
+	SourcePosition    int
+}
+
+type fallthroughNode struct {
+	Position int
+}
+
+func (n *fallthroughNode) Render(ctx *Context, w io.Writer) error {
+	return nil
 }
 
 // SwitchNode renders switch structures
 type SwitchNode struct {
-	Expression   string
-	Cases        []CaseBlock
-	DefaultBlock Node
-	Evaluator    *Evaluator
+	Expression     string
+	Clauses        []SwitchClause
+	Evaluator      *Evaluator
+	SourcePosition int
 }
 
 func (n *SwitchNode) Render(ctx *Context, w io.Writer) error {
@@ -457,33 +475,40 @@ func (n *SwitchNode) Render(ctx *Context, w io.Writer) error {
 		return err
 	}
 
-	matched := false
-	shouldFallthrough := false
+	targetIndex := -1
+	defaultIndex := -1
 
-	for _, caseBlock := range n.Cases {
-		caseVal, err := n.Evaluator.Evaluate(caseBlock.Expression, ctx)
-		if err != nil {
-			return err
+	for index, clause := range n.Clauses {
+		if clause.Kind == SwitchCaseClause {
+			caseVal, err := n.Evaluator.Evaluate(clause.Expression, ctx)
+			if err != nil {
+				return err
+			}
+			if n.Evaluator.ValuesEqual(switchVal, caseVal) {
+				targetIndex = index
+				break
+			}
+		} else if clause.Kind == SwitchDefaultClause && defaultIndex == -1 {
+			defaultIndex = index
 		}
-
-		caseMatches := shouldFallthrough || n.Evaluator.ValuesEqual(switchVal, caseVal)
-		if !caseMatches {
-			continue
-		}
-
-		matched = true
-		if err := caseBlock.Body.Render(ctx, w); err != nil {
-			return err
-		}
-
-		if !caseBlock.Fallthrough {
-			return nil
-		}
-		shouldFallthrough = true
 	}
 
-	if (shouldFallthrough || !matched) && n.DefaultBlock != nil {
-		return n.DefaultBlock.Render(ctx, w)
+	if targetIndex == -1 {
+		targetIndex = defaultIndex
+	}
+
+	if targetIndex == -1 {
+		return nil
+	}
+
+	for index := targetIndex; index < len(n.Clauses); index++ {
+		clause := n.Clauses[index]
+		if err := clause.Body.Render(ctx, w); err != nil {
+			return err
+		}
+		if !clause.AllowsFallthrough {
+			break
+		}
 	}
 
 	return nil
@@ -958,12 +983,6 @@ type BreakNode struct {
 
 func (n *BreakNode) Render(ctx *Context, w io.Writer) error {
 	return errBreak
-}
-
-type fallthroughNode struct{}
-
-func (n *fallthroughNode) Render(ctx *Context, w io.Writer) error {
-	return nil
 }
 
 // PWANode generates PWA manifest, theme, mobile viewport, icons, and service worker registration tags

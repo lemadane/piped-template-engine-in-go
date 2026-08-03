@@ -15,11 +15,11 @@ func TestFileRouter(t *testing.T) {
 
 	// Write test templates for routes
 	routes := map[string]string{
-		"+page.pte":                     "|page title='Home'|\n<h1>Hello, |name ?? 'Guest'|!</h1><p>Path: |page.RequestURI|</p>",
-		"products/+page.pte":            "|page title='Products'|\n<h1>Products List</h1>",
-		"products/[id]/+page.pte":       "|page title='Product Detail'|\n<h1>Product |id|</h1>",
-		"products/featured/+page.pte":   "|page title='Featured Products'|\n<h1>Featured</h1>",
-		"admin/+page.pte":               "|page auth=true|\n|page roles='admin'|\n<h1>Admin Page</h1>",
+		"+page.pte":                   "|page title='Home'|\n<h1>Hello, |name ?? 'Guest'|!</h1><p>Path: |page.RequestURI|</p>",
+		"products/+page.pte":          "|page title='Products'|\n<h1>Products List</h1>",
+		"products/[id]/+page.pte":     "|page title='Product Detail'|\n<h1>Product |id|</h1>",
+		"products/featured/+page.pte": "|page title='Featured Products'|\n<h1>Featured</h1>",
+		"admin/+page.pte":             "|page auth=true|\n|page roles='admin'|\n<h1>Admin Page</h1>",
 	}
 
 	for relPath, content := range routes {

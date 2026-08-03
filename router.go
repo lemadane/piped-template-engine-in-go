@@ -444,4 +444,3 @@ type PageContext struct {
 	HXTrigger    string
 	HXCurrentURL string
 }
-

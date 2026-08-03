@@ -559,7 +559,9 @@ Iterate over Go map key-value pairs:
 ---
 
 ### 6. Switch & Case Statements (Highly Used)
-Branching structure with automatic breaking and explicit `|fallthrough|`:
+PTEGo supports structured `|switch|`, `|case|`, `|default|`, and `|fallthrough|` control structures with automatic breaking and explicit fallthrough execution.
+
+#### Basic Syntax
 ```html
 |switch status|
     |case 'pending'|
@@ -573,6 +575,88 @@ Branching structure with automatic breaking and explicit `|fallthrough|`:
         <span>Unknown status</span>
 |/switch|
 ```
+
+#### Core Semantics & Rules
+
+1. **Automatic Break**: When a matching `case` or `default` clause finishes executing, the switch automatically stops and returns unless `|fallthrough|` is specified.
+2. **Clause Order Preservation**: `case` and `default` clauses are evaluated and rendered in their exact source code order.
+3. **Flexible `default` Placement**: A `default` clause may appear anywhere relative to `case` clauses (first, middle, or last). A switch may contain at most one `default` clause. If no `case` matches, execution jumps directly to `default`.
+4. **Explicit Fallthrough**: `|fallthrough|` continues execution into the immediately following physical clause regardless of whether the next clause's expression matches.
+5. **Fallthrough into `default`**: A `case` clause with `|fallthrough|` whose physical successor is `default` will fall through directly into `default`. Likewise, a non-final `default` clause with `|fallthrough|` will fall through into the next physical `case`.
+6. **Fallthrough Placement Restrictions**:
+   - `|fallthrough|` must be a direct child directive of a switch clause. It cannot appear conditionally inside `|if|` blocks, loops, or nested structures.
+   - `|fallthrough|` must be the final directive of its clause. Rendered text (other than whitespace or comments) or directives after `|fallthrough|` in the same clause are rejected during compilation.
+   - `|fallthrough|` cannot appear in the final clause of a switch (whether `case` or `default`).
+
+---
+
+#### Invalid Switch Examples & Compilation Errors
+
+PTEGo strictly validates switch structures during template compilation:
+
+* **Empty Switch Expression**:
+  ```html
+  |switch ||default|Unknown|/switch|
+  <!-- Compilation Error: switch expression must not be empty at position 18 -->
+  ```
+
+* **Empty Case Expression**:
+  ```html
+  |switch role||case |Invalid|/switch|
+  <!-- Compilation Error: case expression must not be empty at position 28 -->
+  ```
+
+* **Duplicate Default Clauses**:
+  ```html
+  |switch role||default|First|default|Second|/switch|
+  <!-- Compilation Error: switch cannot contain more than one default clause at position 38 -->
+  ```
+
+* **Unexpected Content Before First Clause**:
+  ```html
+  |switch role|Unreachable text|case 'admin'|Admin|/switch|
+  <!-- Compilation Error: unexpected content before first switch clause at position 28 -->
+  ```
+
+* **Fallthrough Outside Switch Clause / Nested Fallthrough**:
+  ```html
+  |switch role|
+      |case 'admin'|
+          |if active|
+              |fallthrough|
+          |/if|
+  |/switch|
+  <!-- Compilation Error: fallthrough is only allowed as the final directive of a switch clause at position 64 -->
+  ```
+
+* **Content Following Fallthrough**:
+  ```html
+  |switch role|
+      |case 'admin'|
+          Administrator
+          |fallthrough|
+          Unreachable trailing content
+      |case 'manager'|
+          Manager
+  |/switch|
+  <!-- Compilation Error: fallthrough is only allowed as the final directive of a switch clause at position 82 -->
+  ```
+
+* **Fallthrough in Final Clause**:
+  ```html
+  |switch role|
+      |case 'admin'|
+          Administrator
+          |fallthrough|
+  |/switch|
+  <!-- Compilation Error: fallthrough cannot appear in the final switch clause at position 78 -->
+  ```
+
+* **Misplaced Directive Outside Switch**:
+  ```html
+  |case 'admin'|Administrator
+  <!-- Compilation Error: misplaced |case 'admin'| directive at position 0 -->
+  ```
 
 ---
 

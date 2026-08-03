@@ -133,13 +133,13 @@ func (l *Lexer) classifyToken(content string) TokenType {
 		return TokenContinue
 	} else if content == "break" {
 		return TokenBreak
-	} else if strings.HasPrefix(content, "switch ") {
+	} else if content == "switch" || strings.HasPrefix(content, "switch ") {
 		return TokenSwitch
-	} else if strings.HasPrefix(content, "case ") {
+	} else if content == "case" || strings.HasPrefix(content, "case ") {
 		return TokenCase
-	} else if content == "default" {
+	} else if content == "default" || strings.HasPrefix(content, "default ") {
 		return TokenDefault
-	} else if content == "fallthrough" {
+	} else if content == "fallthrough" || strings.HasPrefix(content, "fallthrough ") {
 		return TokenFallthrough
 	} else if content == "/switch" {
 		return TokenEndSwitch

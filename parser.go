@@ -111,7 +111,7 @@ func (p *Parser) Parse(tokens []Token) (*CompiledTemplate, error) {
 		}, nil
 	}
 
-	rootBlock, err := p.parseBlockWithLoopDepth(cursor, "", metadata, 0)
+	rootBlock, err := p.parseBlockWithLoopDepthDirect(cursor, "", metadata, 0, false)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +119,12 @@ func (p *Parser) Parse(tokens []Token) (*CompiledTemplate, error) {
 		tok := cursor.peek()
 		if tok.Type == TokenElse {
 			return nil, fmt.Errorf("|else| outside for or each at position %d", tok.Position)
+		}
+		if tok.Type == TokenCase {
+			return nil, fmt.Errorf("misplaced |case| directive at position %d", tok.Position)
+		}
+		if tok.Type == TokenDefault {
+			return nil, fmt.Errorf("misplaced |default| directive at position %d", tok.Position)
 		}
 		return nil, fmt.Errorf("unexpected directive |%s| at position %d", tok.Value, tok.Position)
 	}
@@ -152,10 +158,14 @@ func (c *parserCursor) next() Token {
 }
 
 func (p *Parser) parseBlock(cursor *parserCursor, stopToken TokenType, metadata map[string]any) (Node, error) {
-	return p.parseBlockWithLoopDepth(cursor, stopToken, metadata, 0)
+	return p.parseBlockWithLoopDepthDirect(cursor, stopToken, metadata, 0, false)
 }
 
 func (p *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenType, metadata map[string]any, loopDepth int) (Node, error) {
+	return p.parseBlockWithLoopDepthDirect(cursor, stopToken, metadata, loopDepth, false)
+}
+
+func (p *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopToken TokenType, metadata map[string]any, loopDepth int, inSwitchClauseDirect bool) (Node, error) {
 	var nodes []Node
 
 	for cursor.hasNext() {
@@ -165,7 +175,11 @@ func (p *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenTy
 			break
 		}
 
-		if token.Type == TokenElse || token.Type == TokenElseIf || token.Type == TokenRecover || token.Type == TokenCase || token.Type == TokenDefault {
+		if token.Type == TokenElse || token.Type == TokenElseIf || token.Type == TokenRecover {
+			break
+		}
+
+		if inSwitchClauseDirect && (token.Type == TokenCase || token.Type == TokenDefault) {
 			break
 		}
 
@@ -210,6 +224,8 @@ func (p *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenTy
 				return nil, fmt.Errorf("|break| outside a loop at %d", token.Position)
 			}
 			nodes = append(nodes, &BreakNode{Position: token.Position})
+		case TokenCase, TokenDefault:
+			return nil, fmt.Errorf("misplaced |%s| directive at position %d", token.Value, token.Position)
 		case TokenEndFor, TokenEndEach, TokenEndIf, TokenEndSection, TokenEndComponent, TokenEndSlot, TokenEndMacro, TokenEndFragment, TokenEndMinify, TokenEndAttempt, TokenEndSwitch, TokenEndSeparator:
 			return nil, fmt.Errorf("misplaced loop or block directive |%s| at %d", token.Value, token.Position)
 		case TokenModel:
@@ -237,7 +253,7 @@ func (p *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenTy
 			}
 			nodes = append(nodes, callNode)
 		case TokenSeparator:
-			sepBody, err := p.parseBlockWithLoopDepth(cursor, TokenEndSeparator, metadata, loopDepth)
+			sepBody, err := p.parseBlockWithLoopDepthDirect(cursor, TokenEndSeparator, metadata, loopDepth, false)
 			if err != nil {
 				return nil, err
 			}
@@ -290,7 +306,10 @@ func (p *Parser) parseBlockWithLoopDepth(cursor *parserCursor, stopToken TokenTy
 			}
 			nodes = append(nodes, swNode)
 		case TokenFallthrough:
-			nodes = append(nodes, &fallthroughNode{})
+			if !inSwitchClauseDirect {
+				return nil, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", token.Position)
+			}
+			nodes = append(nodes, &fallthroughNode{Position: token.Position})
 		case TokenPWA:
 			pwaNode, err := p.parsePWA(token)
 			if err != nil {
@@ -960,80 +979,142 @@ func (p *Parser) parseComponent(compToken Token, cursor *parserCursor, metadata 
 }
 
 func (p *Parser) parseSwitch(switchToken Token, cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, error) {
-	expr := strings.TrimSpace(switchToken.Value[len("switch "):])
+	expr := strings.TrimSpace(strings.TrimPrefix(switchToken.Value, "switch"))
+	if expr == "" {
+		return nil, fmt.Errorf("switch expression must not be empty at position %d", switchToken.Position)
+	}
 
-	var cases []CaseBlock
-	var defaultBlock Node
+	var clauses []SwitchClause
+	hasDefault := false
+	seenFirstClause := false
 
-	for cursor.hasNext() && cursor.peek().Type != TokenEndSwitch {
-		p.skipWhitespaceAndComments(cursor)
-		if !cursor.hasNext() || cursor.peek().Type == TokenEndSwitch {
+	for cursor.hasNext() {
+		tok := cursor.peek()
+
+		if tok.Type == TokenEndSwitch {
 			break
 		}
 
-		tok := cursor.peek()
-		if tok.Type == TokenCase {
+		if tok.Type == TokenCase || tok.Type == TokenDefault {
+			seenFirstClause = true
 			cursor.next()
-			caseExpr := strings.TrimSpace(tok.Value[len("case "):])
 
-			caseBody, err := p.parseBlockWithLoopDepth(cursor, TokenEndSwitch, metadata, loopDepth)
+			var kind SwitchClauseKind
+			var caseExpr string
+			if tok.Type == TokenCase {
+				kind = SwitchCaseClause
+				caseExpr = strings.TrimSpace(strings.TrimPrefix(tok.Value, "case"))
+				if caseExpr == "" {
+					return nil, fmt.Errorf("case expression must not be empty at position %d", tok.Position)
+				}
+			} else {
+				kind = SwitchDefaultClause
+				if hasDefault {
+					return nil, fmt.Errorf("switch cannot contain more than one default clause at position %d", tok.Position)
+				}
+				hasDefault = true
+			}
+
+			clauseBody, fallthroughPos, hasFallthrough, err := p.parseSwitchClauseBody(cursor, metadata, loopDepth)
 			if err != nil {
 				return nil, err
 			}
 
-			hasFallthrough := false
-			if block, ok := caseBody.(*BlockNode); ok {
-				var cleanChildren []Node
-				for _, child := range block.Children {
-					if _, ok := child.(*fallthroughNode); ok {
-						hasFallthrough = true
-					} else {
-						cleanChildren = append(cleanChildren, child)
-					}
-				}
-				caseBody = &BlockNode{Children: cleanChildren}
-			}
-
-			cases = append(cases, CaseBlock{
-				Expression:  caseExpr,
-				Body:        caseBody,
-				Fallthrough: hasFallthrough,
+			clauses = append(clauses, SwitchClause{
+				Kind:              kind,
+				Expression:        caseExpr,
+				Body:              clauseBody,
+				AllowsFallthrough: hasFallthrough,
+				FallthroughPos:    fallthroughPos,
+				SourcePosition:    tok.Position,
 			})
-		} else if tok.Type == TokenDefault {
-			cursor.next()
-			body, err := p.parseBlockWithLoopDepth(cursor, TokenEndSwitch, metadata, loopDepth)
-			if err != nil {
-				return nil, err
-			}
-
-			if block, ok := body.(*BlockNode); ok {
-				var cleanChildren []Node
-				for _, child := range block.Children {
-					if _, ok := child.(*fallthroughNode); !ok {
-						cleanChildren = append(cleanChildren, child)
-					}
-				}
-				body = &BlockNode{Children: cleanChildren}
-			}
-
-			defaultBlock = body
-		} else {
-			cursor.next()
+			continue
 		}
+
+		if !seenFirstClause {
+			if tok.Type == TokenText {
+				if strings.TrimSpace(tok.Value) != "" {
+					return nil, fmt.Errorf("unexpected content before first switch clause at position %d", tok.Position)
+				}
+				cursor.next()
+				continue
+			}
+			if tok.Type == TokenComment {
+				cursor.next()
+				continue
+			}
+			return nil, fmt.Errorf("unexpected content before first switch clause at position %d", tok.Position)
+		}
+
+		return nil, fmt.Errorf("misplaced directive |%s| inside switch at position %d", tok.Value, tok.Position)
 	}
 
 	if cursor.hasNext() && cursor.peek().Type == TokenEndSwitch {
 		cursor.next()
 	} else {
-		return nil, fmt.Errorf("missing closing |/switch|")
+		return nil, fmt.Errorf("missing closing |/switch| for switch at position %d", switchToken.Position)
+	}
+
+	if len(clauses) > 0 {
+		lastClause := clauses[len(clauses)-1]
+		if lastClause.AllowsFallthrough {
+			return nil, fmt.Errorf("fallthrough cannot appear in the final switch clause at position %d", lastClause.FallthroughPos)
+		}
 	}
 
 	return &SwitchNode{
-		Expression:   expr,
-		Cases:        cases,
-		DefaultBlock: defaultBlock,
-		Evaluator:    p.evaluator,
+		Expression:     expr,
+		Clauses:        clauses,
+		Evaluator:      p.evaluator,
+		SourcePosition: switchToken.Position,
 	}, nil
+}
+
+func (p *Parser) parseSwitchClauseBody(cursor *parserCursor, metadata map[string]any, loopDepth int) (Node, int, bool, error) {
+	bodyNode, err := p.parseBlockWithLoopDepthDirect(cursor, TokenEndSwitch, metadata, loopDepth, true)
+	if err != nil {
+		return nil, 0, false, err
+	}
+
+	var children []Node
+	if block, ok := bodyNode.(*BlockNode); ok {
+		children = block.Children
+	} else if bodyNode != nil {
+		children = []Node{bodyNode}
+	}
+
+	var cleanChildren []Node
+	var ftNode *fallthroughNode
+	ftIndex := -1
+
+	for index, child := range children {
+		if ft, ok := child.(*fallthroughNode); ok {
+			if ftNode != nil {
+				return nil, ft.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", ft.Position)
+			}
+			ftNode = ft
+			ftIndex = index
+		} else {
+			cleanChildren = append(cleanChildren, child)
+		}
+	}
+
+	if ftNode != nil {
+		for i := ftIndex + 1; i < len(children); i++ {
+			child := children[i]
+			if txt, ok := child.(*TextNode); ok {
+				if strings.TrimSpace(string(txt.Value)) != "" {
+					return nil, ftNode.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", ftNode.Position)
+				}
+			} else {
+				return nil, ftNode.Position, false, fmt.Errorf("fallthrough is only allowed as the final directive of a switch clause at position %d", ftNode.Position)
+			}
+		}
+
+		return &BlockNode{Children: cleanChildren}, ftNode.Position, true, nil
+	}
+
+	return &BlockNode{Children: cleanChildren}, 0, false, nil
 }
 
 func findOutputIfIndex(source string) int {

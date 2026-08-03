@@ -113,7 +113,7 @@ func TestExpressions(t *testing.T) {
 			expected: "Inactive",
 		},
 		{
-			name: "Truthy/Falsy logical evaluation in if-block",
+			name:     "Truthy/Falsy logical evaluation in if-block",
 			template: `|if products|Has products|else|No products|/if|`,
 			data:     map[string]any{"products": []any{}},
 			expected: "No products",
@@ -953,6 +953,334 @@ func TestRangeForAndControlFlowErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			err := engine.Render(&buf, tt.template, tt.data)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.errContains)
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("expected error containing %q, got %v", tt.errContains, err)
+			}
+		})
+	}
+}
+
+func TestSwitchSemanticsValid(t *testing.T) {
+	engine := NewEngine("")
+
+	tests := []struct {
+		name     string
+		template string
+		data     map[string]any
+		expected string
+	}{
+		{
+			name: "1. First string case matches",
+			template: `|switch role|
+    |case 'admin'|Administrator
+    |case 'manager'|Manager
+    |default|User
+|/switch|`,
+			data:     map[string]any{"role": "admin"},
+			expected: "Administrator",
+		},
+		{
+			name: "2. Middle string case matches",
+			template: `|switch role|
+    |case 'admin'|Administrator
+    |case 'manager'|Manager
+    |case 'user'|Regular User
+    |default|Guest
+|/switch|`,
+			data:     map[string]any{"role": "manager"},
+			expected: "Manager",
+		},
+		{
+			name: "3. Last string case matches",
+			template: `|switch role|
+    |case 'admin'|Administrator
+    |case 'manager'|Manager
+    |case 'user'|Regular User
+|/switch|`,
+			data:     map[string]any{"role": "user"},
+			expected: "Regular User",
+		},
+		{
+			name: "4. No case matches and default renders",
+			template: `|switch role|
+    |case 'admin'|Administrator
+    |case 'manager'|Manager
+    |default|Guest
+|/switch|`,
+			data:     map[string]any{"role": "unknown"},
+			expected: "Guest",
+		},
+		{
+			name: "5. No case matches and no default renders nothing",
+			template: `|switch role|
+    |case 'admin'|Administrator
+    |case 'manager'|Manager
+|/switch|`,
+			data:     map[string]any{"role": "unknown"},
+			expected: "",
+		},
+		{
+			name: "6. Integer case comparison",
+			template: `|switch status|
+    |case 200|OK
+    |case 404|Not Found
+    |case 500|Error
+|/switch|`,
+			data:     map[string]any{"status": 200},
+			expected: "OK",
+		},
+		{
+			name: "7. Floating-point-compatible numeric comparison",
+			template: `|switch score|
+    |case 95.5|A+
+    |case 80.0|B
+|/switch|`,
+			data:     map[string]any{"score": 95.5},
+			expected: "A+",
+		},
+		{
+			name: "8. Boolean case comparison",
+			template: `|switch active|
+    |case true|Active User
+    |case false|Inactive User
+|/switch|`,
+			data:     map[string]any{"active": true},
+			expected: "Active User",
+		},
+		{
+			name: "9. Variable expression used as a case value",
+			template: `|switch inputRole|
+    |case targetRole|Matched Target
+    |case 'other'|Other
+|/switch|`,
+			data:     map[string]any{"inputRole": "editor", "targetRole": "editor"},
+			expected: "Matched Target",
+		},
+		{
+			name: "10. Automatic break prevents later clauses from rendering",
+			template: `|switch role|
+    |case 'admin'|Administrator
+    |case 'manager'|Manager
+    |default|User
+|/switch|`,
+			data:     map[string]any{"role": "admin"},
+			expected: "Administrator",
+		},
+		{
+			name: "11. Single fallthrough",
+			template: `|switch role|
+    |case 'admin'|Administrator
+        |fallthrough|
+    |case 'manager'|Reports
+    |default|Regular user
+|/switch|`,
+			data:     map[string]any{"role": "admin"},
+			expected: "Administrator Reports",
+		},
+		{
+			name: "12. Multiple chained fallthroughs",
+			template: `|switch step|
+    |case 1|One
+        |fallthrough|
+    |case 2|Two
+        |fallthrough|
+    |case 3|Three
+|/switch|`,
+			data:     map[string]any{"step": 1},
+			expected: "One Two Three",
+		},
+		{
+			name: "13. Fallthrough into default",
+			template: `|switch role|
+    |case 'admin'|Admin
+        |fallthrough|
+    |default|Default Handling
+|/switch|`,
+			data:     map[string]any{"role": "admin"},
+			expected: "Admin Default Handling",
+		},
+		{
+			name: "14. Default located before another case, if clause ordering permits it",
+			template: `|switch role|
+    |default|Default Option
+    |case 'admin'|Admin Option
+|/switch|`,
+			data:     map[string]any{"role": "admin"},
+			expected: "Admin Option",
+		},
+		{
+			name: "15. Fallthrough from a non-final default into the next case",
+			template: `|switch role|
+    |default|Fallback
+        |fallthrough|
+    |case 'admin'|Admin
+|/switch|`,
+			data:     map[string]any{"role": "guest"},
+			expected: "Fallback Admin",
+		},
+		{
+			name: "16. Nested if/else inside a case",
+			template: `|switch role|
+    |case 'admin'|
+        |if active|Active Admin|else|Inactive Admin|/if|
+|/switch|`,
+			data:     map[string]any{"role": "admin", "active": true},
+			expected: "Active Admin",
+		},
+		{
+			name: "17. Nested switch inside a case",
+			template: `|switch outer|
+    |case 'user'|User: |switch inner|
+        |case 'a'|Type A
+        |case 'b'|Type B
+    |/switch|
+|/switch|`,
+			data:     map[string]any{"outer": "user", "inner": "b"},
+			expected: "User: Type B",
+		},
+		{
+			name: "18. Inner-switch fallthrough does not affect the outer switch",
+			template: `|switch outer|
+    |case 'first'|Outer1: |switch inner|
+        |case 'a'|InnerA
+            |fallthrough|
+        |case 'b'|InnerB
+    |/switch|
+    |case 'second'|Outer2
+|/switch|`,
+			data:     map[string]any{"outer": "first", "inner": "a"},
+			expected: "Outer1: InnerA InnerB",
+		},
+		{
+			name: "19. Outer-switch fallthrough does not corrupt nested-switch state",
+			template: `|switch outer|
+    |case 'first'|Outer1: |switch inner|
+        |case 'a'|InnerA
+    |/switch|
+        |fallthrough|
+    |case 'second'|Outer2
+|/switch|`,
+			data:     map[string]any{"outer": "first", "inner": "a"},
+			expected: "Outer1: InnerA Outer2",
+		},
+		{
+			name: "20. HTML escaping inside rendered case bodies remains correct",
+			template: `|switch role|
+    |case 'user'|<span>|name|</span>
+|/switch|`,
+			data:     map[string]any{"role": "user", "name": "<script>alert('xss')</script>"},
+			expected: "<span>&lt;script&gt;alert(&#039;xss&#039;)&lt;/script&gt;</span>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := engine.Render(&buf, tt.template, tt.data); err != nil {
+				t.Fatalf("unexpected rendering error: %v", err)
+			}
+			got := strings.TrimSpace(buf.String())
+			gotNorm := strings.Join(strings.Fields(got), " ")
+			expNorm := strings.Join(strings.Fields(tt.expected), " ")
+			if gotNorm != expNorm {
+				t.Errorf("expected %q, got %q", expNorm, gotNorm)
+			}
+		})
+	}
+}
+
+func TestSwitchSemanticsInvalid(t *testing.T) {
+	engine := NewEngine("")
+
+	tests := []struct {
+		name        string
+		template    string
+		errContains string
+	}{
+		{
+			name:        "1. Empty switch expression",
+			template:    `|switch ||default|Unknown|/switch|`,
+			errContains: "switch expression must not be empty",
+		},
+		{
+			name:        "2. Empty case expression",
+			template:    `|switch role||case |Invalid|/switch|`,
+			errContains: "case expression must not be empty",
+		},
+		{
+			name:        "3. Duplicate default clauses",
+			template:    `|switch role||default|First|default|Second|/switch|`,
+			errContains: "switch cannot contain more than one default clause",
+		},
+		{
+			name:        "4. Fallthrough outside a switch",
+			template:    `<p>Before</p>|fallthrough|<p>After</p>`,
+			errContains: "fallthrough is only allowed as the final directive of a switch clause",
+		},
+		{
+			name:        "5. Fallthrough before the first case",
+			template:    `|switch role||fallthrough||case 'admin'|Administrator|/switch|`,
+			errContains: "unexpected content before first switch clause",
+		},
+		{
+			name:        "6. Fallthrough nested inside if",
+			template:    `|switch role||case 'admin'||if active||fallthrough||/if||/switch|`,
+			errContains: "fallthrough is only allowed as the final directive of a switch clause",
+		},
+		{
+			name:        "7. Fallthrough nested inside a loop",
+			template:    `|switch role||case 'admin'||for i from 1 to 3||fallthrough||/for||/switch|`,
+			errContains: "fallthrough is only allowed as the final directive of a switch clause",
+		},
+		{
+			name:        "8. Rendered content following fallthrough",
+			template:    `|switch role||case 'admin'|Administrator|fallthrough|This content is unreachable.|case 'manager'|Manager|/switch|`,
+			errContains: "fallthrough is only allowed as the final directive of a switch clause",
+		},
+		{
+			name:        "9. A second fallthrough in the same clause",
+			template:    `|switch role||case 'admin'|Administrator|fallthrough||fallthrough||case 'manager'|Manager|/switch|`,
+			errContains: "fallthrough is only allowed as the final directive of a switch clause",
+		},
+		{
+			name:        "10. Fallthrough in the final case",
+			template:    `|switch role||case 'admin'|Administrator|fallthrough||/switch|`,
+			errContains: "fallthrough cannot appear in the final switch clause",
+		},
+		{
+			name:        "11. Fallthrough in the final default",
+			template:    `|switch role||case 'admin'|Admin|default|Guest|fallthrough||/switch|`,
+			errContains: "fallthrough cannot appear in the final switch clause",
+		},
+		{
+			name:        "12. Unexpected content before the first clause",
+			template:    `|switch role|This content must not disappear silently.|case 'admin'|Administrator|/switch|`,
+			errContains: "unexpected content before first switch clause",
+		},
+		{
+			name:        "13. Case outside a switch",
+			template:    `|case 'admin'|Administrator`,
+			errContains: "misplaced |case",
+		},
+		{
+			name:        "14. Default outside a switch",
+			template:    `|default|Default User`,
+			errContains: "misplaced |default| directive",
+		},
+		{
+			name:        "15. Missing |/switch|",
+			template:    `|switch role||case 'admin'|Administrator`,
+			errContains: "missing closing |/switch|",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := engine.Render(&buf, tt.template, nil)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.errContains)
 			}
