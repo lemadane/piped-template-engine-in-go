@@ -3,6 +3,7 @@ package pte
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -37,10 +38,13 @@ func (evaluator *Evaluator) ValuesEqual(left, right any) bool {
 		return left == right
 	}
 
-	leftNum, isLeftNum := toFloat64(left)
-	rightNum, isRightNum := toFloat64(right)
+	leftNum, isLeftNum := parseNumberValue(left)
+	rightNum, isRightNum := parseNumberValue(right)
 	if isLeftNum && isRightNum {
-		return math.Abs(leftNum-rightNum) < 1e-9
+		eq, err := compareNumbers(leftNum, rightNum, "==")
+		if err == nil {
+			return eq
+		}
 	}
 
 	return reflect.DeepEqual(left, right)
@@ -151,36 +155,7 @@ func (evaluator *Evaluator) evaluateValue(expression string, context *Context) (
 		leftNum, isLeftNum := parseNumberValue(leftVal)
 		rightNum, isRightNum := parseNumberValue(rightVal)
 		if isLeftNum && isRightNum {
-			switch arithDesc.operator {
-			case "+":
-				if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
-					if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
-						return leftNum.intVal + rightNum.intVal, nil
-					}
-				}
-				return leftNum.asFloat() + rightNum.asFloat(), nil
-			case "-":
-				if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
-					if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
-						return leftNum.intVal - rightNum.intVal, nil
-					}
-				}
-				return leftNum.asFloat() - rightNum.asFloat(), nil
-			case "*":
-				if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
-					if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
-						return leftNum.intVal * rightNum.intVal, nil
-					}
-				}
-				return leftNum.asFloat() * rightNum.asFloat(), nil
-			case "/":
-				if rightNum.asFloat() == 0 {
-					return nil, fmt.Errorf("division by zero")
-				}
-				return leftNum.asFloat() / rightNum.asFloat(), nil
-			case "%":
-				return performModulo(leftNum, rightNum)
-			}
+			return evaluator.evaluateArithmetic(leftNum, rightNum, arithDesc.operator)
 		}
 	}
 
@@ -232,10 +207,14 @@ func (evaluator *Evaluator) evaluateValue(expression string, context *Context) (
 			if parsedUint, err := strconv.ParseUint(trimmedExpression, 10, 64); err == nil {
 				return parsedUint, nil
 			}
+			return nil, fmt.Errorf("integer literal out of range: %s", trimmedExpression)
 		}
 		parsedFloat, err := strconv.ParseFloat(trimmedExpression, 64)
 		if err != nil {
 			return nil, err
+		}
+		if math.IsNaN(parsedFloat) || math.IsInf(parsedFloat, 0) {
+			return nil, fmt.Errorf("invalid float literal: %s", trimmedExpression)
 		}
 		return parsedFloat, nil
 	}
@@ -317,7 +296,7 @@ func (evaluator *Evaluator) isQuotedString(value string) bool {
 		strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'"))
 }
 
-var numberRegex = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
+var numberRegex = regexp.MustCompile(`^-?\d+(\.\d+)?([eE][+-]?\d+)?$`)
 
 func (evaluator *Evaluator) isNumber(value string) bool {
 	return numberRegex.MatchString(value)
@@ -1500,6 +1479,25 @@ func (num numberValue) asFloat() float64 {
 	}
 }
 
+func applyCmp(cmp int, operator string) (bool, error) {
+	switch operator {
+	case "==":
+		return cmp == 0, nil
+	case "!=":
+		return cmp != 0, nil
+	case ">":
+		return cmp > 0, nil
+	case ">=":
+		return cmp >= 0, nil
+	case "<":
+		return cmp < 0, nil
+	case "<=":
+		return cmp <= 0, nil
+	default:
+		return false, fmt.Errorf("unsupported operator: %s", operator)
+	}
+}
+
 func compareNumbers(left, right numberValue, operator string) (bool, error) {
 	if left.kind != numberKindFloat && right.kind != numberKindFloat {
 		var cmp int
@@ -1541,42 +1539,197 @@ func compareNumbers(left, right numberValue, operator string) (bool, error) {
 			}
 		}
 
-		switch operator {
-		case "==":
-			return cmp == 0, nil
-		case "!=":
-			return cmp != 0, nil
-		case ">":
-			return cmp > 0, nil
-		case ">=":
-			return cmp >= 0, nil
-		case "<":
-			return cmp < 0, nil
-		case "<=":
-			return cmp <= 0, nil
-		default:
-			return false, fmt.Errorf("unsupported operator: %s", operator)
-		}
+		return applyCmp(cmp, operator)
 	}
 
-	lf := left.asFloat()
-	rf := right.asFloat()
+	if left.kind == numberKindFloat && right.kind == numberKindFloat {
+		if math.IsNaN(left.floatVal) || math.IsNaN(right.floatVal) {
+			if operator == "!=" {
+				return true, nil
+			}
+			return false, nil
+		}
+		var cmp int
+		if left.floatVal < right.floatVal {
+			cmp = -1
+		} else if left.floatVal > right.floatVal {
+			cmp = 1
+		} else {
+			cmp = 0
+		}
+		return applyCmp(cmp, operator)
+	}
+
+	// Mixed Float and Integer (Signed or Unsigned)
+	floatNum := left
+	intNum := right
+	isLeftFloat := (left.kind == numberKindFloat)
+	if !isLeftFloat {
+		floatNum = right
+		intNum = left
+	}
+
+	if math.IsNaN(floatNum.floatVal) {
+		if operator == "!=" {
+			return true, nil
+		}
+		return false, nil
+	}
+	if math.IsInf(floatNum.floatVal, 1) {
+		var cmp int
+		if isLeftFloat {
+			cmp = 1
+		} else {
+			cmp = -1
+		}
+		return applyCmp(cmp, operator)
+	}
+	if math.IsInf(floatNum.floatVal, -1) {
+		var cmp int
+		if isLeftFloat {
+			cmp = -1
+		} else {
+			cmp = 1
+		}
+		return applyCmp(cmp, operator)
+	}
+
+	floatRat := new(big.Rat).SetFloat64(floatNum.floatVal)
+	if floatRat == nil {
+		return false, fmt.Errorf("invalid float value")
+	}
+
+	intRat := new(big.Rat)
+	if intNum.kind == numberKindSignedInt {
+		intRat.SetInt64(intNum.intVal)
+	} else {
+		intRat.SetUint64(intNum.uintVal)
+	}
+
+	var cmp int
+	if isLeftFloat {
+		cmp = floatRat.Cmp(intRat)
+	} else {
+		cmp = intRat.Cmp(floatRat)
+	}
+	return applyCmp(cmp, operator)
+}
+
+func (evaluator *Evaluator) evaluateArithmetic(leftNum, rightNum numberValue, operator string) (any, error) {
+	if leftNum.kind != numberKindFloat && rightNum.kind != numberKindFloat {
+		leftBig := new(big.Int)
+		if leftNum.kind == numberKindSignedInt {
+			leftBig.SetInt64(leftNum.intVal)
+		} else {
+			leftBig.SetUint64(leftNum.uintVal)
+		}
+
+		rightBig := new(big.Int)
+		if rightNum.kind == numberKindSignedInt {
+			rightBig.SetInt64(rightNum.intVal)
+		} else {
+			rightBig.SetUint64(rightNum.uintVal)
+		}
+
+		resBig := new(big.Int)
+		switch operator {
+		case "+":
+			resBig.Add(leftBig, rightBig)
+		case "-":
+			resBig.Sub(leftBig, rightBig)
+		case "*":
+			resBig.Mul(leftBig, rightBig)
+		case "/":
+			if rightBig.Sign() == 0 {
+				return nil, fmt.Errorf("division by zero")
+			}
+			resBig.Quo(leftBig, rightBig)
+		case "%":
+			return performModulo(leftNum, rightNum)
+		default:
+			return nil, fmt.Errorf("unsupported operator: %s", operator)
+		}
+
+		// Check bounds based on operand types
+		if leftNum.kind == numberKindUnsignedInt && rightNum.kind == numberKindUnsignedInt {
+			if operator == "-" && resBig.Sign() < 0 {
+				return nil, fmt.Errorf("unsigned integer underflow")
+			}
+			if resBig.Sign() < 0 {
+				return nil, fmt.Errorf("unsigned integer overflow")
+			}
+			if resBig.IsUint64() {
+				return resBig.Uint64(), nil
+			}
+			return nil, fmt.Errorf("unsigned integer overflow")
+		}
+
+		if leftNum.kind == numberKindSignedInt && rightNum.kind == numberKindSignedInt {
+			if resBig.IsInt64() {
+				return resBig.Int64(), nil
+			}
+			return nil, fmt.Errorf("integer overflow")
+		}
+
+		// Mixed signed/unsigned integer arithmetic
+		if resBig.Sign() >= 0 {
+			if leftNum.kind == numberKindUnsignedInt || rightNum.kind == numberKindUnsignedInt {
+				if resBig.IsUint64() {
+					if resBig.IsInt64() {
+						return resBig.Int64(), nil
+					}
+					return resBig.Uint64(), nil
+				}
+				return nil, fmt.Errorf("integer overflow")
+			}
+		}
+
+		if resBig.IsInt64() {
+			return resBig.Int64(), nil
+		}
+		if resBig.IsUint64() {
+			return resBig.Uint64(), nil
+		}
+		return nil, fmt.Errorf("integer overflow")
+	}
+
+	// Floating-point arithmetic
+	if math.IsNaN(leftNum.asFloat()) || math.IsNaN(rightNum.asFloat()) || math.IsInf(leftNum.asFloat(), 0) || math.IsInf(rightNum.asFloat(), 0) {
+		return nil, fmt.Errorf("invalid float operand")
+	}
 
 	switch operator {
-	case "==":
-		return lf == rf, nil
-	case "!=":
-		return lf != rf, nil
-	case ">":
-		return lf > rf, nil
-	case ">=":
-		return lf >= rf, nil
-	case "<":
-		return lf < rf, nil
-	case "<=":
-		return lf <= rf, nil
+	case "+":
+		res := leftNum.asFloat() + rightNum.asFloat()
+		if math.IsNaN(res) || math.IsInf(res, 0) {
+			return nil, fmt.Errorf("float arithmetic overflow")
+		}
+		return res, nil
+	case "-":
+		res := leftNum.asFloat() - rightNum.asFloat()
+		if math.IsNaN(res) || math.IsInf(res, 0) {
+			return nil, fmt.Errorf("float arithmetic overflow")
+		}
+		return res, nil
+	case "*":
+		res := leftNum.asFloat() * rightNum.asFloat()
+		if math.IsNaN(res) || math.IsInf(res, 0) {
+			return nil, fmt.Errorf("float arithmetic overflow")
+		}
+		return res, nil
+	case "/":
+		if rightNum.asFloat() == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+		res := leftNum.asFloat() / rightNum.asFloat()
+		if math.IsNaN(res) || math.IsInf(res, 0) {
+			return nil, fmt.Errorf("float arithmetic overflow")
+		}
+		return res, nil
+	case "%":
+		return nil, fmt.Errorf("modulo requires integer operands")
 	default:
-		return false, fmt.Errorf("unsupported operator: %s", operator)
+		return nil, fmt.Errorf("unsupported operator: %s", operator)
 	}
 }
 
