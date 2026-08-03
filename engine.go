@@ -183,31 +183,114 @@ func (engine *Engine) renderRawFragment(buffer *bytes.Buffer, templateOrTemplate
 		return err
 	}
 
-	fragNode := engine.findFragmentNode(compiled.RootNode, fragmentName)
-	if fragNode == nil {
-		return fmt.Errorf("fragment %q not found in template", fragmentName)
-	}
-
 	context := NewContext(values)
 	context.PushLocal("_engine", engine)
 
-	engine.registerTopLevelMacros(compiled.RootNode, context)
+	fragNode, found := engine.findAndPrepareFragment(compiled.RootNode, fragmentName, context)
+	if !found || fragNode == nil {
+		return fmt.Errorf("fragment %q not found in template", fragmentName)
+	}
 
 	return fragNode.Render(context, buffer)
 }
 
-func (engine *Engine) registerTopLevelMacros(node Node, context *Context) {
+func (engine *Engine) findAndPrepareFragment(node Node, name string, context *Context) (Node, bool) {
 	if node == nil {
-		return
+		return nil, false
 	}
-	if blockNode, ok := node.(*BlockNode); ok {
-		for _, child := range blockNode.Children {
-			if macroNode, isMacro := child.(*MacroNode); isMacro {
-				context.PushLocal("_macro_"+macroNode.Name, macroNode)
-			} else {
-				engine.registerTopLevelMacros(child, context)
+
+	switch n := node.(type) {
+	case *BlockNode:
+		for _, child := range n.Children {
+			if engine.findFragmentNode(child, name) != nil {
+				return engine.findAndPrepareFragment(child, name, context)
+			}
+			if macro, ok := child.(*MacroNode); ok {
+				context.PushLocal("_macro_"+macro.Name, macro)
 			}
 		}
+		return nil, false
+
+	case *FragmentNode:
+		if n.Name == name {
+			return n, true
+		}
+		if engine.findFragmentNode(n.Body, name) != nil {
+			return engine.findAndPrepareFragment(n.Body, name, context)
+		}
+		return nil, false
+
+	case *LayoutNode:
+		for _, sec := range n.Sections {
+			if engine.findFragmentNode(sec, name) != nil {
+				return engine.findAndPrepareFragment(sec, name, context)
+			}
+		}
+		return nil, false
+
+	case *MinifyNode:
+		if engine.findFragmentNode(n.Body, name) != nil {
+			return engine.findAndPrepareFragment(n.Body, name, context)
+		}
+		return nil, false
+
+	case *IfNode:
+		if engine.findFragmentNode(n.ThenBlock, name) != nil {
+			return engine.findAndPrepareFragment(n.ThenBlock, name, context)
+		}
+		for _, branch := range n.ElseIfBranches {
+			if engine.findFragmentNode(branch.Block, name) != nil {
+				return engine.findAndPrepareFragment(branch.Block, name, context)
+			}
+		}
+		if n.ElseBlock != nil && engine.findFragmentNode(n.ElseBlock, name) != nil {
+			return engine.findAndPrepareFragment(n.ElseBlock, name, context)
+		}
+		return nil, false
+
+	case *EachNode:
+		if engine.findFragmentNode(n.BodyBlock, name) != nil {
+			return engine.findAndPrepareFragment(n.BodyBlock, name, context)
+		}
+		if n.ElseBlock != nil && engine.findFragmentNode(n.ElseBlock, name) != nil {
+			return engine.findAndPrepareFragment(n.ElseBlock, name, context)
+		}
+		if n.SeparatorNode != nil && engine.findFragmentNode(n.SeparatorNode, name) != nil {
+			return engine.findAndPrepareFragment(n.SeparatorNode, name, context)
+		}
+		return nil, false
+
+	case *ForNode:
+		if engine.findFragmentNode(n.BodyBlock, name) != nil {
+			return engine.findAndPrepareFragment(n.BodyBlock, name, context)
+		}
+		if n.ElseBlock != nil && engine.findFragmentNode(n.ElseBlock, name) != nil {
+			return engine.findAndPrepareFragment(n.ElseBlock, name, context)
+		}
+		if n.SeparatorNode != nil && engine.findFragmentNode(n.SeparatorNode, name) != nil {
+			return engine.findAndPrepareFragment(n.SeparatorNode, name, context)
+		}
+		return nil, false
+
+	case *AttemptNode:
+		if engine.findFragmentNode(n.Body, name) != nil {
+			return engine.findAndPrepareFragment(n.Body, name, context)
+		}
+		if n.RecoverBlock != nil && engine.findFragmentNode(n.RecoverBlock, name) != nil {
+			return engine.findAndPrepareFragment(n.RecoverBlock, name, context)
+		}
+		return nil, false
+
+	case *SwitchNode:
+		for _, clause := range n.Clauses {
+			if engine.findFragmentNode(clause.Body, name) != nil {
+				return engine.findAndPrepareFragment(clause.Body, name, context)
+			}
+		}
+		return nil, false
+
+	default:
+		return nil, false
 	}
 }
 
@@ -525,6 +608,36 @@ func (engine *Engine) findFragmentNode(node Node, name string) Node {
 			if found := engine.findFragmentNode(eachNode.SeparatorNode, name); found != nil {
 				return found
 			}
+		}
+	}
+
+	if forNode, ok := node.(*ForNode); ok {
+		if found := engine.findFragmentNode(forNode.BodyBlock, name); found != nil {
+			return found
+		}
+		if forNode.ElseBlock != nil {
+			if found := engine.findFragmentNode(forNode.ElseBlock, name); found != nil {
+				return found
+			}
+		}
+		if forNode.SeparatorNode != nil {
+			if found := engine.findFragmentNode(forNode.SeparatorNode, name); found != nil {
+				return found
+			}
+		}
+	}
+
+	if switchNode, ok := node.(*SwitchNode); ok {
+		for _, clause := range switchNode.Clauses {
+			if found := engine.findFragmentNode(clause.Body, name); found != nil {
+				return found
+			}
+		}
+	}
+
+	if minifyNode, ok := node.(*MinifyNode); ok {
+		if found := engine.findFragmentNode(minifyNode.Body, name); found != nil {
+			return found
 		}
 	}
 

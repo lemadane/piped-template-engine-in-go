@@ -111,8 +111,8 @@ func (lexer *Lexer) Tokenize(template string) ([]Token, error) {
 				return nil, fmt.Errorf("nested raw block is not allowed at index %d", absolutePipeIndex)
 			}
 			tokens = append(tokens, Token{
-				Type:     TokenText,
-				Value:    unescapePipes(rawContent),
+				Type:     TokenRaw,
+				Value:    rawContent,
 				Position: absolutePipeIndex,
 			})
 			cursor = absoluteClosingPipe + 1 + rawEnd + len("|/raw|")
@@ -150,17 +150,41 @@ func unescapePipes(s string) string {
 	if !strings.Contains(s, "\\") {
 		return s
 	}
-	var sb strings.Builder
-	sb.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+1 < len(s) && (s[i+1] == '|' || s[i+1] == '\\') {
-			sb.WriteByte(s[i+1])
-			i++
+
+	var stringBuilder strings.Builder
+	stringBuilder.Grow(len(s))
+
+	length := len(s)
+	characterIndex := 0
+
+	for characterIndex < length {
+		if s[characterIndex] == '\\' {
+			backslashCount := 0
+			for characterIndex+backslashCount < length && s[characterIndex+backslashCount] == '\\' {
+				backslashCount++
+			}
+
+			afterIndex := characterIndex + backslashCount
+			if afterIndex < length && s[afterIndex] == '|' {
+				if backslashCount%2 != 0 {
+					stringBuilder.WriteString(strings.Repeat("\\", backslashCount-1))
+					stringBuilder.WriteByte('|')
+				} else {
+					stringBuilder.WriteString(strings.Repeat("\\", backslashCount))
+					stringBuilder.WriteByte('|')
+				}
+				characterIndex = afterIndex + 1
+			} else {
+				stringBuilder.WriteString(strings.Repeat("\\", backslashCount))
+				characterIndex = afterIndex
+			}
 		} else {
-			sb.WriteByte(s[i])
+			stringBuilder.WriteByte(s[characterIndex])
+			characterIndex++
 		}
 	}
-	return sb.String()
+
+	return stringBuilder.String()
 }
 
 func (lexer *Lexer) classifyToken(content string) TokenType {

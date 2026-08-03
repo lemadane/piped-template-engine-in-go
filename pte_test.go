@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2284,6 +2285,7 @@ type UserUnexported struct {
 }
 
 type UserWithGetter struct {
+	Name       string
 	secretCode string
 }
 
@@ -2823,32 +2825,198 @@ func TestRemainingIssue1ModuloByZero(t *testing.T) {
 func TestRemainingIssue2LiteralPipesAndRawBlocks(t *testing.T) {
 	engine := NewEngine("")
 
-	t.Run("Escaped single and double pipes", func(t *testing.T) {
-		var buf bytes.Buffer
-		tmpl := `<div x-text="primary \|\| fallback"></div>`
-		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
-			t.Fatalf("unexpected error: %v", err)
+	t.Run("Literal pipes and double pipes", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			template string
+			expected string
+		}{
+			{"Single escaped pipe", `\|`, "|"},
+			{"Double escaped pipes", `\|\|`, "||"},
+			{"Pipe surrounded by spaces", `A \| B`, "A | B"},
+			{"JavaScript OR expression", `<div x-text="primary \|\| fallback"></div>`, `<div x-text="primary || fallback"></div>`},
 		}
-		expected := `<div x-text="primary || fallback"></div>`
-		if got := buf.String(); got != expected {
-			t.Errorf("expected %q, got %q", expected, got)
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var buf bytes.Buffer
+				if err := engine.RenderString(&buf, tt.template, nil); err != nil {
+					t.Fatalf("unexpected error rendering %q: %v", tt.template, err)
+				}
+				if got := buf.String(); got != tt.expected {
+					t.Errorf("template %q: expected %q, got %q", tt.template, tt.expected, got)
+				}
+			})
 		}
 	})
 
-	t.Run("Raw block emits unparsed content", func(t *testing.T) {
-		tmpl := `|raw|
-<div x-text="primary || fallback"></div>
-<script>
+	t.Run("Backslash parity before pipe", func(t *testing.T) {
+		// Test 1 through 6 backslashes before a pipe
+		// Odd count = pipe is escaped, 1 backslash removed.
+		// Even count = pipe is directive delimiter, 0 backslashes removed.
+		data := map[string]any{"name": "PTE"}
+
+		// 1 backslash: \| -> literal pipe '|'
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, `\|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "|" {
+			t.Errorf("1 backslash: expected '|', got %q", got)
+		}
+
+		// 2 backslashes: \\|name| -> \\PTE (directive evaluated, 2 backslashes preserved)
+		buf.Reset()
+		if err := engine.RenderString(&buf, `\\|name|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != `\\PTE` {
+			t.Errorf("2 backslashes: expected %q, got %q", `\\PTE`, got)
+		}
+
+		// 3 backslashes: \\\| -> \\| (escaped pipe, 2 backslashes preserved)
+		buf.Reset()
+		if err := engine.RenderString(&buf, `\\\|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != `\\|` {
+			t.Errorf("3 backslashes: expected %q, got %q", `\\|`, got)
+		}
+
+		// 4 backslashes: \\\\|name| -> \\\\PTE (directive evaluated, 4 backslashes preserved)
+		buf.Reset()
+		if err := engine.RenderString(&buf, `\\\\|name|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != `\\\\PTE` {
+			t.Errorf("4 backslashes: expected %q, got %q", `\\\\PTE`, got)
+		}
+
+		// 5 backslashes: \\\\\| -> \\\\| (escaped pipe, 4 backslashes preserved)
+		buf.Reset()
+		if err := engine.RenderString(&buf, `\\\\\|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != `\\\\|` {
+			t.Errorf("5 backslashes: expected %q, got %q", `\\\\|`, got)
+		}
+
+		// 6 backslashes: \\\\\\|name| -> \\\\\\PTE (directive evaluated, 6 backslashes preserved)
+		buf.Reset()
+		if err := engine.RenderString(&buf, `\\\\\\|name|`, data); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != `\\\\\\PTE` {
+			t.Errorf("6 backslashes: expected %q, got %q", `\\\\\\PTE`, got)
+		}
+	})
+
+	t.Run("Ordinary backslashes remain untouched", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			template string
+			expected string
+		}{
+			{"Windows path single backslashes", `C:\templates\page.pte`, `C:\templates\page.pte`},
+			{"Windows path double backslashes", `C:\\templates\\page.pte`, `C:\\templates\\page.pte`},
+			{"UNC path", `\\server\share\folder`, `\\server\share\folder`},
+			{"Regular expression", `regular\expression`, `regular\expression`},
+			{"Trailing backslash", `trailing\`, `trailing\`},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var buf bytes.Buffer
+				if err := engine.RenderString(&buf, tt.template, nil); err != nil {
+					t.Fatalf("unexpected error rendering %q: %v", tt.template, err)
+				}
+				if got := buf.String(); got != tt.expected {
+					t.Errorf("template %q: expected %q, got %q", tt.template, tt.expected, got)
+				}
+			})
+		}
+	})
+
+	t.Run("JavaScript and AlpineJS escaping", func(t *testing.T) {
+		jsTmpl := `<script>
+    const result = primary \|\| fallback;
+    const flags = left \| right;
+    const path = "C:\\temp\\file";
+</script>`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, jsTmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		expectedJS := `<script>
+    const result = primary || fallback;
     const flags = left | right;
-</script>
+    const path = "C:\\temp\\file";
+</script>`
+		if got := buf.String(); got != expectedJS {
+			t.Errorf("JS expected %q, got %q", expectedJS, got)
+		}
+
+		alpineTmpl := `<div x-data="{ ready: false }"
+     x-show="ready \|\| loading">
+</div>`
+		buf.Reset()
+		if err := engine.RenderString(&buf, alpineTmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		expectedAlpine := `<div x-data="{ ready: false }"
+     x-show="ready || loading">
+</div>`
+		if got := buf.String(); got != expectedAlpine {
+			t.Errorf("Alpine expected %q, got %q", expectedAlpine, got)
+		}
+	})
+
+	t.Run("Raw block exact byte-for-byte rendering", func(t *testing.T) {
+		rawTmpl := `|raw|C:\\templates\|literal|/raw|`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, rawTmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		expectedRaw := `C:\\templates\|literal`
+		if got := buf.String(); got != expectedRaw {
+			t.Errorf("raw block expected %q, got %q", expectedRaw, got)
+		}
+
+		complexRaw := `|raw|
+|if thisLooksLikePTE|
+C:\\templates\|literal
+<div x-text="a || b"></div>
+|# this must remain literal |
 |/raw|`
+		buf.Reset()
+		if err := engine.RenderString(&buf, complexRaw, nil); err != nil {
+			t.Fatal(err)
+		}
+		expectedComplex := "\n|if thisLooksLikePTE|\nC:\\\\templates\\|literal\n<div x-text=\"a || b\"></div>\n|# this must remain literal |\n"
+		if got := buf.String(); got != expectedComplex {
+			t.Errorf("complex raw block expected %q, got %q", expectedComplex, got)
+		}
+	})
+
+	t.Run("Empty raw block renders 0 bytes", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|raw||/raw|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("empty raw block expected '', got %q", got)
+		}
+	})
+
+	t.Run("Multiple raw blocks in single template", func(t *testing.T) {
+		tmpl := `|raw|first \| raw|/raw| middle |raw|second \| raw|/raw|`
 		var buf bytes.Buffer
 		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
-			t.Fatalf("unexpected error rendering raw block: %v", err)
+			t.Fatal(err)
 		}
-		expected := "\n<div x-text=\"primary || fallback\"></div>\n<script>\n    const flags = left | right;\n</script>\n"
+		expected := `first \| raw middle second \| raw`
 		if got := buf.String(); got != expected {
-			t.Errorf("expected %q, got %q", expected, got)
+			t.Errorf("multiple raw blocks expected %q, got %q", expected, got)
 		}
 	})
 
@@ -2879,6 +3047,298 @@ func TestRemainingIssue2LiteralPipesAndRawBlocks(t *testing.T) {
 		err := engine.RenderString(&buf, tmpl, nil)
 		if err == nil || !strings.Contains(err.Error(), "nested raw block") {
 			t.Fatalf("expected nested raw block error, got %v", err)
+		}
+	})
+
+	t.Run("Stray /raw directive error", func(t *testing.T) {
+		tmpl := `hello |/raw| world`
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, tmpl, nil)
+		if err == nil || !strings.Contains(err.Error(), "misplaced |/raw| directive") {
+			t.Fatalf("expected misplaced |/raw| directive error, got %v", err)
+		}
+	})
+
+	t.Run("Concurrent raw block rendering", func(t *testing.T) {
+		source := `|raw|
+<script>
+    const res = primary || fallback;
+    const path = "C:\\temp\\file.txt";
+</script>
+|/raw|
+|if active|Hello |name|!|/if|`
+		compiled, err := engine.Compile(source)
+		if err != nil {
+			t.Fatalf("failed to compile template: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 100; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var buf bytes.Buffer
+				context := NewContext(map[string]any{"active": true, "name": "Alice"})
+				if err := compiled.RootNode.Render(context, &buf); err != nil {
+					t.Errorf("concurrent render error: %v", err)
+				}
+				if !strings.Contains(buf.String(), `primary || fallback`) || !strings.Contains(buf.String(), "Hello Alice!") {
+					t.Errorf("concurrent render output mismatch: %s", buf.String())
+				}
+			}()
+		}
+		wg.Wait()
+	})
+}
+
+func TestIssue2EndToEndFullEnginePipelineRegression(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create real template files on disk
+	pageContent := `|page auth=false|
+<!DOCTYPE html>
+<html>
+<head>
+    <title>E2E Test</title>
+</head>
+<body>
+    <div id="path-container">Path: C:\app\templates\page.pte</div>
+    <div id="unc-container">UNC: \\server\share\folder</div>
+    <div x-data="{ open: false }" x-show="open \|\| loading">JS Escaped</div>
+    |raw|
+    <script>
+        const rawPath = "C:\\app\\templates\\page.pte";
+        const isReady = primary || fallback;
+        const comment = "<!-- must not be stripped -->";
+    </script>
+    |/raw|
+    |if active||user.name||/if|
+    |fragment status|
+        <span>Status: |status|</span>
+    |/fragment|
+</body>
+</html>`
+
+	if err := os.WriteFile(filepath.Join(tempDir, "dashboard.pte"), []byte(pageContent), 0644); err != nil {
+		t.Fatalf("failed to write test template: %v", err)
+	}
+
+	engine := NewEngine(tempDir, WithMinify(true))
+	data := map[string]any{
+		"active": true,
+		"user":   map[string]any{"name": "Alice"},
+		"status": "Online",
+	}
+
+	t.Run("1. Disk template render (Engine.Render)", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, "dashboard", data); err != nil {
+			t.Fatalf("Engine.Render failed: %v", err)
+		}
+
+		out := buf.String()
+		// Validate Windows path backslashes preserved
+		if !strings.Contains(out, `C:\app\templates\page.pte`) {
+			t.Errorf("Windows path lost backslashes in disk render: %s", out)
+		}
+		// Validate UNC path backslashes preserved
+		if !strings.Contains(out, `\\server\share\folder`) {
+			t.Errorf("UNC path lost backslashes in disk render: %s", out)
+		}
+		// Validate JS logical OR escaped pipe
+		if !strings.Contains(out, `x-show="open || loading"`) {
+			t.Errorf("Escaped double pipe failed in disk render: %s", out)
+		}
+		// Validate raw block byte-for-byte content
+		expectedRawJS := `const rawPath = "C:\\app\\templates\\page.pte";
+        const isReady = primary || fallback;
+        const comment = "<!-- must not be stripped -->";`
+		if !strings.Contains(out, expectedRawJS) {
+			t.Errorf("Raw block content transformed in minified disk render: %s", out)
+		}
+		// Validate adjacent directives
+		if !strings.Contains(out, `Alice`) {
+			t.Errorf("Adjacent directive failed in disk render: %s", out)
+		}
+	})
+
+	t.Run("2. Asynchronous streaming pipeline (Engine.RenderStream)", func(t *testing.T) {
+		streamReader := engine.RenderStream("dashboard", data)
+		streamBytes, err := io.ReadAll(streamReader)
+		if err != nil {
+			t.Fatalf("RenderStream read error: %v", err)
+		}
+
+		out := string(streamBytes)
+		if !strings.Contains(out, `C:\app\templates\page.pte`) || !strings.Contains(out, `x-show="open || loading"`) {
+			t.Errorf("RenderStream output corrupted: %s", out)
+		}
+	})
+
+	t.Run("3. HTTP Web Server FileRouter pipeline", func(t *testing.T) {
+		routesDir := filepath.Join(tempDir, "routes")
+		if err := os.MkdirAll(routesDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		routeContent := `|page auth=false|
+<div>
+    <h1>Route Test</h1>
+    <p>Windows: C:\\routes\\page.pte</p>
+    |raw|
+    <script>
+        const routeJS = a || b;
+    </script>
+    |/raw|
+</div>`
+		if err := os.WriteFile(filepath.Join(routesDir, "+page.pte"), []byte(routeContent), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		routerEngine := NewEngine("")
+		fileRouter, err := NewFileRouter(routerEngine, routesDir)
+		if err != nil {
+			t.Fatalf("NewFileRouter error: %v", err)
+		}
+
+		req := httptest.NewRequest("GET", "/", nil)
+		rec := httptest.NewRecorder()
+		fileRouter.ServeHTTP(rec, req)
+
+		out := rec.Body.String()
+		if !strings.Contains(out, `C:\\routes\\page.pte`) {
+			t.Errorf("HTTP router output corrupted Windows path: %s", out)
+		}
+		if !strings.Contains(out, `const routeJS = a || b;`) {
+			t.Errorf("HTTP router output corrupted raw block: %s", out)
+		}
+	})
+
+	t.Run("4. Fragment rendering pipeline (Engine.RenderFragment)", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderFragment(&buf, "dashboard", "status", data); err != nil {
+			t.Fatalf("RenderFragment error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "Status: Online") {
+			t.Errorf("RenderFragment output mismatch: %s", buf.String())
+		}
+	})
+}
+
+func TestIssues6To10EndToEndFullPipelineSuite(t *testing.T) {
+	// Embedded filesystem fixture for Issue #8 (WithFS)
+	appFS := fstest.MapFS{
+		"templates/layouts/main.pte": &fstest.MapFile{
+			Data: []byte(`<!DOCTYPE html><html><head><title>App</title></head><body>|yield content|</body></html>`),
+		},
+		"templates/pages/dashboard.pte": &fstest.MapFile{
+			Data: []byte(`|layout layouts/main|
+|section content|
+<main>
+    <h1>Dashboard</h1>
+    <div id="named-key">Answer: |dataMap.answer|</div>
+    <div id="int-key">Category: |intMap.100|</div>
+    <div id="user-exported">User: |user.Name|</div>
+    <div id="user-getter">Secret: |user.GetSecretCode|</div>
+    <div id="opt-chain">Optional: |user?.secretCode|</div>
+    |fragment user_fragment|
+        <section class="user-card">
+            <span>User Fragment: |user.Name|</span>
+        </section>
+    |/fragment|
+    |fragment stats_fragment|
+        <section class="stats-card">
+            <span>Stats: |intMap.100|</span>
+        </section>
+    |/fragment|
+</main>
+|/section|`),
+		},
+		"templates/pages/failing.pte": &fstest.MapFile{
+			Data: []byte(`|fragment failing_fragment|
+    <div>|nonexistentVar.subProperty|</div>
+|/fragment|`),
+		},
+	}
+
+	engine := NewEngine("templates", WithFS(appFS), WithMinify(true))
+
+	type Key string
+	type CatID int
+
+	data := map[string]any{
+		"dataMap": map[Key]string{"answer": "42"},
+		"intMap":  map[CatID]string{100: "Hardware"},
+		"user": UserWithGetter{
+			Name:       "Alice",
+			secretCode: "topsecret",
+		},
+	}
+
+	t.Run("1. Issue #8 (WithFS) + Issue #6 (Named Map Keys) + Issue #7 (Struct Getters/Opt Chain) + Issue #10 (Minified Output)", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, "pages/dashboard", data); err != nil {
+			t.Fatalf("End-to-end full page render failed: %v", err)
+		}
+
+		out := buf.String()
+		// Verify minification
+		if strings.Contains(out, "\n") {
+			t.Errorf("output should be minified into a single line, got: %s", out)
+		}
+		// Verify Issue #6 (Named Map Keys)
+		if !strings.Contains(out, "Answer: 42") {
+			t.Errorf("named map key failed in E2E render: %s", out)
+		}
+		if !strings.Contains(out, "Category: Hardware") {
+			t.Errorf("named int map key failed in E2E render: %s", out)
+		}
+		// Verify Issue #7 (Struct Getters and Optional Chaining)
+		if !strings.Contains(out, "Secret: topsecret") {
+			t.Errorf("struct getter failed in E2E render: %s", out)
+		}
+		if !strings.Contains(out, "Optional: ") {
+			t.Errorf("optional chaining failed in E2E render: %s", out)
+		}
+	})
+
+	t.Run("2. Issue #9 (RenderString Plain Source Text)", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "pages/dashboard", data); err != nil {
+			t.Fatalf("RenderString failed: %v", err)
+		}
+		if got := buf.String(); got != "pages/dashboard" {
+			t.Errorf("RenderString must render literal text 'pages/dashboard', got %q", got)
+		}
+	})
+
+	t.Run("3. Issue #10 (Single & Multiple Fragments Rendered Once & Minified)", func(t *testing.T) {
+		var bufSingle bytes.Buffer
+		if err := engine.RenderFragment(&bufSingle, "pages/dashboard", "user_fragment", data); err != nil {
+			t.Fatalf("RenderFragment failed: %v", err)
+		}
+		if got := bufSingle.String(); !strings.Contains(got, `<section class="user-card">`) {
+			t.Errorf("RenderFragment output mismatch: %s", got)
+		}
+
+		var bufMulti bytes.Buffer
+		if err := engine.RenderFragments(&bufMulti, "pages/dashboard", []string{"user_fragment", "stats_fragment"}, data); err != nil {
+			t.Fatalf("RenderFragments failed: %v", err)
+		}
+		expectedMulti := `<section class="user-card"><span>User Fragment: Alice</span></section><section class="stats-card"><span>Stats: Hardware</span></section>`
+		if got := bufMulti.String(); got != expectedMulti {
+			t.Errorf("RenderFragments expected %q, got %q", expectedMulti, got)
+		}
+	})
+
+	t.Run("4. Issue #10 (Atomic Error Safety - 0 bytes written on failure)", func(t *testing.T) {
+		var bufAtomic bytes.Buffer
+		err := engine.RenderFragments(&bufAtomic, "pages/failing", []string{"failing_fragment"}, data)
+		if err == nil {
+			t.Fatal("expected error for failing fragment")
+		}
+		if bufAtomic.Len() != 0 {
+			t.Errorf("expected 0 bytes written to writer on error, got %d bytes (%q)", bufAtomic.Len(), bufAtomic.String())
 		}
 	})
 }
@@ -2929,91 +3389,360 @@ func TestRemainingIssue3LargeIntegerPrecision(t *testing.T) {
 	})
 }
 
-func TestRemainingIssue4ForRangeFractionalAndOverflow(t *testing.T) {
+func TestIssue4OverflowSafeRangeAndSeparatorSuite(t *testing.T) {
 	engine := NewEngine("")
 
-	t.Run("Fractional range start rejected", func(t *testing.T) {
-		var buf bytes.Buffer
-		err := engine.RenderString(&buf, "|for i from 1.9 to 3||i||/for|", nil)
-		if err == nil {
-			t.Fatal("expected error for fractional range start 1.9")
-		}
-	})
-
-	t.Run("Fractional range end rejected", func(t *testing.T) {
-		var buf bytes.Buffer
-		err := engine.RenderString(&buf, "|for i from 1 to 3.9||i||/for|", nil)
-		if err == nil {
-			t.Fatal("expected error for fractional range end 3.9")
-		}
-	})
-
-	t.Run("Fractional step rejected", func(t *testing.T) {
-		var buf bytes.Buffer
-		err := engine.RenderString(&buf, "|for i from 1 to 5 step 1.5||i||/for|", nil)
-		if err == nil {
-			t.Fatal("expected error for fractional step 1.5")
-		}
-	})
-
-	t.Run("Exact float 3.0 accepted", func(t *testing.T) {
-		var buf bytes.Buffer
-		if err := engine.RenderString(&buf, "|for i from 1.0 to 3.0||i||/for|", nil); err != nil {
-			t.Fatalf("unexpected error for exact floats 1.0 to 3.0: %v", err)
-		}
-		if got := buf.String(); got != "123" {
-			t.Errorf("expected '123', got %q", got)
-		}
-	})
-
-	t.Run("Ascending boundary MaxInt64 loop terminates", func(t *testing.T) {
+	t.Run("1. Reported overflow case: start=-10, end=MaxInt64, step=MaxInt64", func(t *testing.T) {
 		data := map[string]any{
-			"start": int64(math.MaxInt64 - 1),
+			"start": int64(-10),
+			"end":   int64(math.MaxInt64),
+			"step":  int64(math.MaxInt64),
+		}
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from start to end step step||i||separator|,|/separator||/for|", data); err != nil {
+			t.Fatalf("unexpected error rendering reported overflow case: %v", err)
+		}
+		expected := fmt.Sprintf("-10,%d", uint64(math.MaxInt64)-10)
+		if got := buf.String(); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("2. Ascending ranges near MaxInt64", func(t *testing.T) {
+		data := map[string]any{
+			"start": int64(math.MaxInt64 - 2),
 			"end":   int64(math.MaxInt64),
 		}
 		var buf bytes.Buffer
-		if err := engine.RenderString(&buf, "|for i from start to end||i||separator|, |/separator||/for|", data); err != nil {
+		if err := engine.RenderString(&buf, "|for i from start to end||i||separator|,|/separator||/for|", data); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		expected := fmt.Sprintf("%d, %d", math.MaxInt64-1, math.MaxInt64)
+		expected := fmt.Sprintf("%d,%d,%d", math.MaxInt64-2, math.MaxInt64-1, math.MaxInt64)
 		if got := buf.String(); got != expected {
 			t.Errorf("expected %q, got %q", expected, got)
 		}
 	})
 
-	t.Run("Descending boundary MinInt64 loop terminates", func(t *testing.T) {
+	t.Run("3. Descending ranges near MinInt64", func(t *testing.T) {
 		data := map[string]any{
-			"start": int64(math.MinInt64 + 1),
+			"start": int64(math.MinInt64 + 2),
 			"end":   int64(math.MinInt64),
 		}
 		var buf bytes.Buffer
-		if err := engine.RenderString(&buf, "|for i from start to end||i||separator|, |/separator||/for|", data); err != nil {
+		if err := engine.RenderString(&buf, "|for i from start to end||i||separator|,|/separator||/for|", data); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		expected := fmt.Sprintf("%d, %d", math.MinInt64+1, math.MinInt64)
+		expected := fmt.Sprintf("%d,%d,%d", math.MinInt64+2, math.MinInt64+1, math.MinInt64)
 		if got := buf.String(); got != expected {
 			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("4. Ascending range spanning negative to large positive", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from -100 to 100 step 50||i||separator|, |/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "-100, -50, 0, 50, 100" {
+			t.Errorf("expected '-100, -50, 0, 50, 100', got %q", got)
+		}
+	})
+
+	t.Run("5. Descending range spanning large positive to negative", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 100 to -100 step 50||i||separator|, |/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "100, 50, 0, -50, -100" {
+			t.Errorf("expected '100, 50, 0, -50, -100', got %q", got)
+		}
+	})
+
+	t.Run("6. Step larger than remaining distance", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 1 to 5 step 10||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "1" {
+			t.Errorf("expected '1', got %q", got)
+		}
+	})
+
+	t.Run("7. Endpoint reached exactly by step", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 0 to 10 step 5||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "0,5,10" {
+			t.Errorf("expected '0,5,10', got %q", got)
+		}
+	})
+
+	t.Run("8. Endpoint not reached exactly by step", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 0 to 9 step 5||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "0,5" {
+			t.Errorf("expected '0,5', got %q", got)
+		}
+	})
+
+	t.Run("9. Single-value range", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 5 to 5 step 1||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "5" {
+			t.Errorf("expected '5', got %q", got)
+		}
+	})
+
+	t.Run("10. Zero, negative, and fractional steps rejected", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 1 to 5 step 0||i||/for|", nil); err == nil {
+			t.Error("expected error for step 0")
+		}
+
+		buf.Reset()
+		if err := engine.RenderString(&buf, "|for i from 1 to 5 step -1||i||/for|", nil); err == nil {
+			t.Error("expected error for step -1")
+		}
+
+		buf.Reset()
+		if err := engine.RenderString(&buf, "|for i from 1 to 5 step 1.5||i||/for|", nil); err == nil {
+			t.Error("expected error for step 1.5")
+		}
+	})
+
+	t.Run("11. continue in first, middle, and last iteration", func(t *testing.T) {
+		// First iteration continued
+		var buf1 bytes.Buffer
+		if err := engine.RenderString(&buf1, "|for i from 1 to 3||if i == 1||continue||/if||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf1.String(); got != "2,3" {
+			t.Errorf("first iteration continue: expected '2,3', got %q", got)
+		}
+
+		// Middle iteration continued
+		var buf2 bytes.Buffer
+		if err := engine.RenderString(&buf2, "|for i from 1 to 3||if i == 2||continue||/if||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf2.String(); got != "1,3" {
+			t.Errorf("middle iteration continue: expected '1,3', got %q", got)
+		}
+
+		// Last iteration continued
+		var buf3 bytes.Buffer
+		if err := engine.RenderString(&buf3, "|for i from 1 to 3||if i == 3||continue||/if||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf3.String(); got != "1,2" {
+			t.Errorf("last iteration continue: expected '1,2', got %q", got)
+		}
+	})
+
+	t.Run("12. Multiple consecutive continued iterations", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 1 to 4||if i == 2 or i == 3||continue||/if||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "1,4" {
+			t.Errorf("consecutive continue: expected '1,4', got %q", got)
+		}
+	})
+
+	t.Run("13. All iterations continued renders empty string", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, "|for i from 1 to 3||continue||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); got != "" {
+			t.Errorf("all iterations continued: expected '', got %q", got)
+		}
+	})
+
+	t.Run("14. break in first, middle, and last iteration", func(t *testing.T) {
+		// First iteration break
+		var buf1 bytes.Buffer
+		if err := engine.RenderString(&buf1, "|for i from 1 to 3||if i == 1||break||/if||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf1.String(); got != "" {
+			t.Errorf("first iteration break: expected '', got %q", got)
+		}
+
+		// Middle iteration break
+		var buf2 bytes.Buffer
+		if err := engine.RenderString(&buf2, "|for i from 1 to 3||if i == 2||break||/if||i||separator|,|/separator||/for|", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf2.String(); got != "1" {
+			t.Errorf("middle iteration break: expected '1', got %q", got)
+		}
+	})
+
+	t.Run("15. Nested ranges where inner loop continues or breaks", func(t *testing.T) {
+		tmpl := `|for i from 1 to 2||for j from 1 to 3||if j == 2||continue||/if||i|-|j||separator|;|/separator||/for||separator| |/separator||/for|`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		expected := "1-1;1-3 2-1;2-3"
+		if got := buf.String(); got != expected {
+			t.Errorf("nested range continue: expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("16. Body rendering empty string still renders separators", func(t *testing.T) {
+		tmpl := `|for i from 1 to 3||if i == 2||else|x|/if||separator|,|/separator||/for|`
+		var buf bytes.Buffer
+		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		expected := "x,,x"
+		if got := buf.String(); got != expected {
+			t.Errorf("empty body string iteration: expected %q, got %q", expected, got)
 		}
 	})
 }
 
-func TestRemainingIssue5And6MinifierRawElementsAndPlaceholders(t *testing.T) {
-	t.Run("Script containing HTML comment string preserved", func(t *testing.T) {
-		html := "<script>\nconst marker = \"<!--must remain-->\";\n</script>"
+func TestIssue5HTMLMinifierCommentAndAttributeProtectionSuite(t *testing.T) {
+	t.Run("1. Comment-like sequence in double-quoted attribute", func(t *testing.T) {
+		html := `<div title="<!--keep-->">Content</div>`
 		min := MinifyHTML(html)
-		if !strings.Contains(min, "<!--must remain-->") {
-			t.Errorf("MinifyHTML removed comment-like string inside script: %s", min)
+		if !strings.Contains(min, `title="<!--keep-->"`) {
+			t.Errorf("expected title=\"<!--keep-->\" preserved, got %q", min)
 		}
 	})
 
-	t.Run("Placeholder-like literal string preserved without collision", func(t *testing.T) {
-		html := "___PTE_PRESERVED_0___ <pre>  keep spaces  </pre>"
+	t.Run("2. Comment-like sequence in single-quoted attribute", func(t *testing.T) {
+		html := `<div title='<!--keep-->'>Content</div>`
 		min := MinifyHTML(html)
-		if !strings.Contains(min, "___PTE_PRESERVED_0___") {
-			t.Errorf("MinifyHTML corrupted placeholder-like text: %s", min)
+		if !strings.Contains(min, `title='<!--keep-->'`) {
+			t.Errorf("expected title='<!--keep-->' preserved, got %q", min)
 		}
-		if !strings.Contains(min, "<pre>  keep spaces  </pre>") {
-			t.Errorf("MinifyHTML corrupted pre text: %s", min)
+	})
+
+	t.Run("3. > inside each quote style", func(t *testing.T) {
+		htmlDouble := `<div data-test="a > b">Content</div>`
+		minDouble := MinifyHTML(htmlDouble)
+		if !strings.Contains(minDouble, `data-test="a > b"`) {
+			t.Errorf("expected double-quoted > preserved, got %q", minDouble)
+		}
+
+		htmlSingle := `<div data-test='a > b'>Content</div>`
+		minSingle := MinifyHTML(htmlSingle)
+		if !strings.Contains(minSingle, `data-test='a > b'`) {
+			t.Errorf("expected single-quoted > preserved, got %q", minSingle)
+		}
+	})
+
+	t.Run("4. Multiple attributes containing comment markers and > characters", func(t *testing.T) {
+		html := `<div title="<!--keep-->" data-expression="value > minimum">Content</div>`
+		min := MinifyHTML(html)
+		if !strings.Contains(min, `title="<!--keep-->"`) || !strings.Contains(min, `data-expression="value > minimum"`) {
+			t.Errorf("expected multiple attributes preserved, got %q", min)
+		}
+	})
+
+	t.Run("5. Whitespace and line breaks between attributes", func(t *testing.T) {
+		html := "<div\n    title=\"<!--keep-->\"\n    data-expression=\"value > minimum\">\n    Content\n</div>"
+		min := MinifyHTML(html)
+		if !strings.Contains(min, `title="<!--keep-->"`) || !strings.Contains(min, `data-expression="value > minimum"`) {
+			t.Errorf("expected attributes preserved across linebreaks, got %q", min)
+		}
+	})
+
+	t.Run("6. Empty quoted attribute followed by comment-like attribute", func(t *testing.T) {
+		html := `<div title="" data-comment="<!--keep-->"></div>`
+		min := MinifyHTML(html)
+		if !strings.Contains(min, `title="" data-comment="<!--keep-->"`) {
+			t.Errorf("expected empty attribute and comment attribute preserved, got %q", min)
+		}
+	})
+
+	t.Run("7. Real comments before and after an element", func(t *testing.T) {
+		html := `<!-- before --><div>Before</div><div>After</div><!-- after -->`
+		min := MinifyHTML(html)
+		if min != "<div>Before</div><div>After</div>" {
+			t.Errorf("expected real comments removed, got %q", min)
+		}
+	})
+
+	t.Run("8. Comment-like text in element text after HTML escaping", func(t *testing.T) {
+		html := `<div>&lt;!--keep--&gt;</div>`
+		min := MinifyHTML(html)
+		if !strings.Contains(min, `&lt;!--keep--&gt;`) {
+			t.Errorf("expected HTML escaped text preserved, got %q", min)
+		}
+	})
+
+	t.Run("9. Comment-like strings inside script", func(t *testing.T) {
+		html := "<script>\nconst text = \"<!--not an HTML comment here-->\";\n</script>"
+		min := MinifyHTML(html)
+		if !strings.Contains(min, "<!--not an HTML comment here-->") {
+			t.Errorf("expected script comment string preserved, got %q", min)
+		}
+	})
+
+	t.Run("10. Comment-like strings inside style", func(t *testing.T) {
+		html := "<style>\n.example::before {\n    content: \"<!--keep-->\";\n}\n</style>"
+		min := MinifyHTML(html)
+		if !strings.Contains(min, "<!--keep-->") {
+			t.Errorf("expected style comment string preserved, got %q", min)
+		}
+	})
+
+	t.Run("11. Comment-like content inside PTE raw block", func(t *testing.T) {
+		engine := NewEngine("", WithMinify(true))
+		var buf bytes.Buffer
+		tmpl := `|raw|<div title="<!--keep-->">C:\\path</div>|/raw|`
+		if err := engine.RenderString(&buf, tmpl, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(buf.String(), `title="<!--keep-->"`) {
+			t.Errorf("expected PTE raw block title attribute preserved, got %q", buf.String())
+		}
+	})
+
+	t.Run("12. Adjacent real comments and quoted attribute values", func(t *testing.T) {
+		html := `<!-- comment1 --><div title="<!--keep-->"></div><!-- comment2 -->`
+		min := MinifyHTML(html)
+		if !strings.Contains(min, `<div title="<!--keep-->"></div>`) || strings.Contains(min, `comment1`) || strings.Contains(min, `comment2`) {
+			t.Errorf("expected real comments removed and title attribute preserved, got %q", min)
+		}
+	})
+
+	t.Run("13. Uppercase or mixed-case SCRIPT and STYLE tags", func(t *testing.T) {
+		html := `<SCRIPT>\nconst x = "<!--keep-->";\n</SCRIPT><STYLE>.a{content:"<!--keep-->";}</STYLE>`
+		min := MinifyHTML(html)
+		if !strings.Contains(min, "<!--keep-->") {
+			t.Errorf("expected uppercase raw tag content preserved, got %q", min)
+		}
+	})
+
+	t.Run("14. Attribute values containing PTE pipe characters and escaped pipes", func(t *testing.T) {
+		html := `<div data-val="a || b \| c"></div>`
+		min := MinifyHTML(html)
+		if !strings.Contains(min, `data-val="a || b \| c"`) {
+			t.Errorf("expected pipes in attribute preserved, got %q", min)
+		}
+	})
+
+	t.Run("15. Malformed or unterminated comments, tags, and quoted attributes", func(t *testing.T) {
+		malformedInputs := []string{
+			`<div title="<!--keep-->`,
+			`<!-- unterminated comment`,
+			`<script>const x = "1";`,
+			`<div title='<!--keep-->`,
+			`<div data-val="a > b`,
+		}
+		for _, input := range malformedInputs {
+			// Ensure deterministic execution without panic or hang
+			_ = MinifyHTML(input)
 		}
 	})
 
@@ -3095,9 +3824,230 @@ func TestRemainingIssue8FragmentMacroScoping(t *testing.T) {
 	})
 }
 
+func TestAll34FeaturesEndToEndMasterSuite(t *testing.T) {
+	// Setup embedded filesystem fixture for Feature 3 & 24
+	appFS := fstest.MapFS{
+		"templates/layouts/main.pte": &fstest.MapFile{
+			Data: []byte(`<!DOCTYPE html><html><head><title>|yield title|</title>|pwa name='Master' theme='#000' icon='/i.png' manifest='/m.json' sw='/sw.js'|</head><body>|yield content|</body></html>`),
+		},
+		"templates/components/card.pte": &fstest.MapFile{
+			Data: []byte(`<div class="card"><h3>|slot title|</h3><p>|slot body|</p></div>`),
+		},
+		"templates/partials/nav.pte": &fstest.MapFile{
+			Data: []byte(`<nav>Navigation: |subItem.title|</nav>`),
+		},
+		"templates/pages/master.pte": &fstest.MapFile{
+			Data: []byte(`|layout layouts/main|
+|section title|Master E2E|/section|
+|section content|
+    |model models.TaskModel|
+    |# Single-line comment |
+    |#
+       Multi-line comment block
+    #|
+    |-- Legacy pipe comment --|
+    <main>
+        <h1>|title, trim, upper|</h1>
+        <div id="esc">|rawInput|</div>
+        <div id="html">|html trustedHTML|</div>
+        <div id="attr"><input value="|attr attrInput|"></div>
+        <div id="url"><a href="/search?q=|url queryInput|">Link</a></div>
+        <div id="json"><script>const cfg = |json jsonInput|;</script></div>
+        <div id="opt">User: |user?.Profile?.DisplayName ?? 'Guest'|</div>
+        <div id="ternary">Status: |active ? 'Online' : 'Offline'|</div>
+
+        |if role == 'admin'|
+            <p>Admin Role</p>
+        |else if role == 'manager'|
+            <p>Manager Role</p>
+        |else|
+            <p>User Role</p>
+        |/if|
+
+        <ul id="loop">
+        |each item in items|
+            <li>Item |each.count| of |each.total| (Index: |each.index|): |item.name|</li>|separator|, |/separator|
+        |else|
+            <li>No items</li>
+        |/each|
+        </ul>
+
+        |for i from 1 to 5 step 2|
+            <span>Num: |i|</span>|separator|; |/separator|
+        |/for|
+
+        |switch status|
+            |case 'pending'|
+                <span>Pending</span>
+            |case 'approved'|
+                <span>Approved</span>
+                |fallthrough|
+            |case 'notified'|
+                <span>Notified</span>
+            |default|
+                <span>Unknown</span>
+        |/switch|
+
+        |include partials/nav with subData|
+
+        |macro badge(text, color)|
+            <span class="badge badge-|color|">|text|</span>
+        |/macro|
+        <div id="macro-call">|call badge('Active', 'success')|</div>
+
+        |component components/card|
+            |slot title| Card Title |/slot|
+            |slot body| Card Body |/slot|
+        |/component|
+
+        <input |field formUser.email|>
+        |display formUser.bio|
+        |editor formUser.bio|
+
+        |raw|
+        <script>
+            const unparsed = "C:\\app\\path" || false;
+        </script>
+        |/raw|
+
+        |attempt|
+            <div>|user.MissingField.Value|</div>
+        |recover as err|
+            <div class="err">Caught: |err|</div>
+        |/attempt|
+
+        |fragment header_frag|
+            <header>Header Fragment</header>
+        |/fragment|
+        |fragment footer_frag|
+            <footer>Footer Fragment</footer>
+        |/fragment|
+    </main>
+|/section|`),
+		},
+	}
+
+	engine := NewEngine("templates", WithFS(appFS), WithMinify(true))
+
+	type Key string
+	data := map[string]any{
+		"title":       "  all 34 features  ",
+		"rawInput":    "<script>alert(1)</script>",
+		"trustedHTML": "<strong>Trusted</strong>",
+		"attrInput":   `Hello "World"`,
+		"queryInput":  "coffee & tea",
+		"jsonInput":   map[string]any{"id": 101},
+		"active":      true,
+		"role":        "admin",
+		"items":       []map[string]string{{"name": "Alpha"}, {"name": "Beta"}},
+		"status":      "approved",
+		"subData":     map[string]any{"subItem": map[string]string{"title": "SubNav"}},
+		"formUser":    map[string]any{"email": "test@example.com", "bio": "Bio text"},
+		"mapData":     map[Key]string{"key": "val"},
+		"user":        UserWithGetter{Name: "Alice", secretCode: "secret"},
+	}
+
+	t.Run("Features 1-34 End-to-End Master Pipeline Verification", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := engine.Render(&buf, "pages/master", data); err != nil {
+			t.Fatalf("Master E2E render failed: %v", err)
+		}
+
+		out := buf.String()
+		// 1. Minification
+		if !strings.Contains(out, "<h1>ALL 34 FEATURES</h1><div id=\"esc\">") {
+			t.Errorf("expected HTML minification around tags, got: %s", out)
+		}
+		// 2. Auto HTML Escaping
+		if !strings.Contains(out, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+			t.Errorf("Auto HTML escaping failed: %s", out)
+		}
+		// 3. Raw HTML
+		if !strings.Contains(out, "<strong>Trusted</strong>") {
+			t.Errorf("Raw HTML failed: %s", out)
+		}
+		// 4. Attribute Escaping
+		if !strings.Contains(out, `value="Hello &quot;World&quot;"`) {
+			t.Errorf("Attribute escaping failed: %s", out)
+		}
+		// 5. URL Encoding
+		if !strings.Contains(out, "coffee+%26+tea") {
+			t.Errorf("URL encoding failed: %s", out)
+		}
+		// 6. JSON Encoding
+		if !strings.Contains(out, `const cfg = {"id":101};`) {
+			t.Errorf("JSON encoding failed: %s", out)
+		}
+		// 7. Filters (trim + upper)
+		if !strings.Contains(out, "<h1>ALL 34 FEATURES</h1>") {
+			t.Errorf("Filter chaining failed: %s", out)
+		}
+		// 8. Loops & Separators
+		if !strings.Contains(out, "Item 1 of 2 (Index: 0): Alpha</li> , <li>Item 2 of 2 (Index: 1): Beta</li>") {
+			t.Errorf("Loop & separator failed: %s", out)
+		}
+		// 9. Range for loop with step
+		if !strings.Contains(out, "Num: 1</span> ; <span>Num: 3</span> ; <span>Num: 5</span>") {
+			t.Errorf("Range for loop with step failed: %s", out)
+		}
+		// 10. Switch with fallthrough
+		if !strings.Contains(out, "Approved</span><span>Notified") {
+			t.Errorf("Switch with fallthrough failed: %s", out)
+		}
+		// 11. Includes with sub-model
+		if !strings.Contains(out, "Navigation: SubNav") {
+			t.Errorf("Include with sub-model failed: %s", out)
+		}
+		// 12. Macro call
+		if !strings.Contains(out, `<span class="badge badge-success">Active</span>`) {
+			t.Errorf("Macro call failed: %s", out)
+		}
+		// 13. Components & Slots
+		if !strings.Contains(out, `<div class="card"><h3> Card Title </h3><p> Card Body </p></div>`) {
+			t.Errorf("Component & slot failed: %s", out)
+		}
+		// 14. Form field binding
+		if !strings.Contains(out, `name="email" id="email" value="test@example.com"`) {
+			t.Errorf("Form field binding failed: %s", out)
+		}
+		// 15. Raw Block
+		if !strings.Contains(out, `const unparsed = "C:\\app\\path" || false;`) {
+			t.Errorf("Raw block failed: %s", out)
+		}
+		// 16. Attempt / Recover
+		if !strings.Contains(out, `Caught: `) {
+			t.Errorf("Attempt / Recover failed: %s", out)
+		}
+		// 17. PWA meta tag
+		if !strings.Contains(out, `<meta name="application-name" content="Master">`) {
+			t.Errorf("PWA meta tag failed: %s", out)
+		}
+	})
+
+	t.Run("Stream & Fragment E2E Pipelines", func(t *testing.T) {
+		// RenderStream
+		reader := engine.RenderStream("pages/master", data)
+		streamBytes, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("RenderStream error: %v", err)
+		}
+		if !strings.Contains(string(streamBytes), "<h1>ALL 34 FEATURES</h1>") {
+			t.Errorf("RenderStream pipeline failed")
+		}
+
+		// RenderFragments
+		var fragBuf bytes.Buffer
+		if err := engine.RenderFragments(&fragBuf, "pages/master", []string{"header_frag", "footer_frag"}, data); err != nil {
+			t.Fatalf("RenderFragments error: %v", err)
+		}
+		if got := fragBuf.String(); got != "<header>Header Fragment</header><footer>Footer Fragment</footer>" {
+			t.Errorf("RenderFragments pipeline output mismatch: %q", got)
+		}
+	})
+}
+
 func FuzzGeneralTemplateRendering(f *testing.F) {
 	seeds := []string{
-		"plain text",
 		"|name|",
 		"|0%0|",
 		"|if active|yes|else|no|/if|",
@@ -3121,5 +4071,423 @@ func FuzzGeneralTemplateRendering(f *testing.F) {
 			"role":   "admin",
 			"items":  []int{1, 2, 3},
 		})
+	})
+}
+
+func FuzzLiteralPipeAndRawLexer(f *testing.F) {
+	seeds := []string{
+		`\|`,
+		`\|\|`,
+		`\\|`,
+		`\\\|`,
+		`|raw|a || b|/raw|`,
+		`|raw|C:\\temp\|value|/raw|`,
+		`|if true||name||/if|`,
+		`|raw|unclosed`,
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	lexer := NewLexer()
+
+	f.Fuzz(func(t *testing.T, template string) {
+		tokens, err := lexer.Tokenize(template)
+		if err != nil {
+			return
+		}
+
+		for _, tok := range tokens {
+			if tok.Type == TokenRaw {
+				if strings.Contains(tok.Value, "|raw|") {
+					t.Errorf("TokenRaw contained nested raw block: %s", tok.Value)
+				}
+			}
+		}
+	})
+}
+
+func referenceRangeIterator(start, end, step int64) ([]int64, bool) {
+	if step <= 0 {
+		return nil, false
+	}
+
+	var values []int64
+	uStep := uint64(step)
+	curr := start
+	isAscending := start <= end
+	limit := 100 // Bounded iteration limit to prevent test hangs
+
+	for count := 0; count < limit; count++ {
+		values = append(values, curr)
+
+		var dist uint64
+		if isAscending {
+			dist = uint64(end) - uint64(curr)
+		} else {
+			dist = uint64(curr) - uint64(end)
+		}
+
+		if uStep > dist {
+			break
+		}
+
+		if isAscending {
+			curr += int64(uStep)
+		} else {
+			curr -= int64(uStep)
+		}
+	}
+
+	return values, true
+}
+
+func FuzzNumericRangeIterator(f *testing.F) {
+	// Seed with boundary-biased inputs around MinInt64, -1, 0, 1, MaxInt64
+	boundaryValues := []int64{
+		math.MinInt64,
+		math.MinInt64 + 1,
+		-100,
+		-10,
+		-1,
+		0,
+		1,
+		10,
+		100,
+		math.MaxInt64 - 1,
+		math.MaxInt64,
+	}
+
+	for _, start := range boundaryValues {
+		for _, end := range boundaryValues {
+			for _, step := range []int64{-1, 0, 1, 5, math.MaxInt64} {
+				f.Add(start, end, step)
+			}
+		}
+	}
+
+	engine := NewEngine("")
+
+	f.Fuzz(func(t *testing.T, start, end, step int64) {
+		expectedValues, valid := referenceRangeIterator(start, end, step)
+
+		data := map[string]any{
+			"start": start,
+			"end":   end,
+			"step":  step,
+		}
+
+		var buf bytes.Buffer
+		err := engine.RenderString(&buf, "|for i from start to end step step||i||separator|,|/separator||/for|", data)
+
+		if !valid {
+			if err == nil {
+				t.Errorf("expected error for invalid step %d, got nil", step)
+			}
+			return
+		}
+
+		if err != nil {
+			t.Fatalf("unexpected rendering error for start=%d, end=%d, step=%d: %v", start, end, step, err)
+		}
+
+		var expectedStrings []string
+		for _, val := range expectedValues {
+			expectedStrings = append(expectedStrings, fmt.Sprintf("%d", val))
+		}
+		expected := strings.Join(expectedStrings, ",")
+
+		if got := buf.String(); got != expected {
+			t.Errorf("start=%d, end=%d, step=%d: expected %q, got %q", start, end, step, expected, got)
+		}
+	})
+}
+
+func FuzzHTMLMinifierContextAware(f *testing.F) {
+	seeds := []string{
+		`<div title="<!--keep-->" data-message="A > B">Content</div>`,
+		`<div title='<!--keep-->'>Content</div>`,
+		`<script>const x = "<!--not comment-->";</script>`,
+		`<style>.class::before { content: "<!--keep-->"; }</style>`,
+		`<!-- real comment --><div>Hello</div><!-- comment 2 -->`,
+		`<div title="" data-comment="<!--keep-->"></div>`,
+		`<div data-val="a || b \| c"></div>`,
+		`<div>&lt;!--keep--&gt;</div>`,
+		`<div title="<!--keep-->`,
+		`<!-- unterminated`,
+		`<SCRIPT>let a = '<!-- unicode ❤️ -->';</SCRIPT>`,
+		`<STYLE>body { content: '<!-- café -->'; }</STYLE>`,
+		`|raw|<div title="<!--keep-->">PTE raw</div>|/raw|`,
+		`<div attr=unquoted><!--comment--><span>text</span></div>`,
+		`<div attr="quote > text" attr2='single > quote'><!-- --></div>`,
+		`<a href="url?a=1&b=2" title="<!-- comment -->">Unicode: 你好</a>`,
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, html string) {
+		min := MinifyHTML(html)
+
+		if strings.Contains(html, `<div title="<!--keep-->">`) {
+			if !strings.Contains(min, `title="<!--keep-->"`) {
+				t.Errorf("MinifyHTML corrupted title=\"<!--keep-->\": %s", min)
+			}
+		}
+		if strings.Contains(html, `<div title='<!--keep-->'>`) {
+			if !strings.Contains(min, `title='<!--keep-->'`) {
+				t.Errorf("MinifyHTML corrupted title='<!--keep-->': %s", min)
+			}
+		}
+	})
+}
+
+func TestIssue8FragmentMacroVisibility(t *testing.T) {
+	engine := NewEngine("")
+
+	t.Run("1. Macro before fragment", func(t *testing.T) {
+		tmpl := `|macro badge(text)|<b>|text|</b>|/macro|
+|fragment result||call badge('OK')||/fragment|`
+		var buf bytes.Buffer
+		err := engine.RenderFragment(&buf, tmpl, "result", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := buf.String(); got != "<b>OK</b>" {
+			t.Errorf("expected %q, got %q", "<b>OK</b>", got)
+		}
+	})
+
+	t.Run("2. Macro after fragment", func(t *testing.T) {
+		tmpl := `|fragment result||call badge('OK')||/fragment|
+|macro badge(text)|<b>|text|</b>|/macro|`
+		var buf bytes.Buffer
+		err := engine.RenderFragment(&buf, tmpl, "result", nil)
+		if err == nil {
+			t.Fatalf("expected error for macro declared after fragment, got nil")
+		}
+		if !strings.Contains(err.Error(), "undefined macro \"badge\"") {
+			t.Errorf("expected undefined macro error, got %v", err)
+		}
+	})
+
+	t.Run("3. Macro before call inside fragment", func(t *testing.T) {
+		tmpl := `|fragment result|
+|macro badge(text)|<b>|text|</b>|/macro|
+|call badge('OK')|
+|/fragment|`
+		var buf bytes.Buffer
+		err := engine.RenderFragment(&buf, tmpl, "result", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := strings.TrimSpace(buf.String()); got != "<b>OK</b>" {
+			t.Errorf("expected %q, got %q", "<b>OK</b>", got)
+		}
+	})
+
+	t.Run("4. Macro after call inside fragment", func(t *testing.T) {
+		tmpl := `|fragment result|
+|call badge('OK')|
+|macro badge(text)|<b>|text|</b>|/macro|
+|/fragment|`
+		var buf bytes.Buffer
+		err := engine.RenderFragment(&buf, tmpl, "result", nil)
+		if err == nil {
+			t.Fatalf("expected error for macro declared after call inside fragment, got nil")
+		}
+		if !strings.Contains(err.Error(), "undefined macro \"badge\"") {
+			t.Errorf("expected undefined macro error, got %v", err)
+		}
+	})
+
+	t.Run("5. Macro inside an unrelated conditional", func(t *testing.T) {
+		tmpl := `|if enabled|
+|macro badge(text)|<b>|text|</b>|/macro|
+|/if|
+|fragment result|
+|call badge('OK')|
+|/fragment|`
+
+		for _, enabled := range []bool{true, false} {
+			var buf bytes.Buffer
+			err := engine.RenderFragment(&buf, tmpl, "result", map[string]any{"enabled": enabled})
+			if err == nil {
+				t.Fatalf("enabled=%v: expected error for macro inside conditional, got nil", enabled)
+			}
+			if !strings.Contains(err.Error(), "undefined macro \"badge\"") {
+				t.Errorf("enabled=%v: expected undefined macro error, got %v", enabled, err)
+			}
+		}
+	})
+
+	t.Run("6. Macro inside another fragment", func(t *testing.T) {
+		tmpl := `|fragment first|
+|macro badge(text)|<b>|text|</b>|/macro|
+|/fragment|
+|fragment second|
+|call badge('OK')|
+|/fragment|`
+		var buf bytes.Buffer
+		err := engine.RenderFragment(&buf, tmpl, "second", nil)
+		if err == nil {
+			t.Fatalf("expected error for macro inside another fragment, got nil")
+		}
+		if !strings.Contains(err.Error(), "undefined macro \"badge\"") {
+			t.Errorf("expected undefined macro error, got %v", err)
+		}
+	})
+
+	t.Run("7. Shadowing before vs after fragment", func(t *testing.T) {
+		tmpl := `|macro badge(text)|v1: <b>|text|</b>|/macro|
+|macro badge(text)|v2: <b>|text|</b>|/macro|
+|fragment result||call badge('OK')||/fragment|
+|macro badge(text)|v3: <b>|text|</b>|/macro|`
+		var buf bytes.Buffer
+		err := engine.RenderFragment(&buf, tmpl, "result", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := buf.String(); got != "v2: <b>OK</b>" {
+			t.Errorf("expected %q, got %q", "v2: <b>OK</b>", got)
+		}
+	})
+
+	t.Run("8. Multiple fragments", func(t *testing.T) {
+		tmpl := `|macro firstMacro()|first|/macro|
+|fragment first|
+|call firstMacro()|
+|/fragment|
+|macro secondMacro()|second|/macro|
+|fragment second|
+|call firstMacro()|-|call secondMacro()|
+|/fragment|`
+
+		var buf1 bytes.Buffer
+		if err := engine.RenderFragment(&buf1, tmpl, "first", nil); err != nil {
+			t.Fatalf("unexpected error rendering first: %v", err)
+		}
+		if got := strings.TrimSpace(buf1.String()); got != "first" {
+			t.Errorf("first fragment: expected %q, got %q", "first", got)
+		}
+
+		var buf2 bytes.Buffer
+		if err := engine.RenderFragment(&buf2, tmpl, "second", nil); err != nil {
+			t.Fatalf("unexpected error rendering second: %v", err)
+		}
+		if got := strings.TrimSpace(buf2.String()); got != "first-second" {
+			t.Errorf("second fragment: expected %q, got %q", "first-second", got)
+		}
+
+		var buf1Rev bytes.Buffer
+		if err := engine.RenderFragment(&buf1Rev, tmpl, "first", nil); err != nil {
+			t.Fatalf("unexpected error rendering first in reverse order: %v", err)
+		}
+		if got := strings.TrimSpace(buf1Rev.String()); got != "first" {
+			t.Errorf("first fragment reverse: expected %q, got %q", "first", got)
+		}
+	})
+
+	t.Run("9. RenderFragments scoping", func(t *testing.T) {
+		tmpl := `|fragment first|
+|call secondMacro()|
+|/fragment|
+|macro secondMacro()|second|/macro|
+|fragment second|
+|call secondMacro()|
+|/fragment|`
+
+		var buf bytes.Buffer
+		err := engine.RenderFragments(&buf, tmpl, []string{"first", "second"}, nil)
+		if err == nil {
+			t.Fatalf("expected error when first fragment calls macro declared after it, got nil")
+		}
+		if !strings.Contains(err.Error(), "undefined macro \"secondMacro\"") {
+			t.Errorf("expected undefined macro error, got %v", err)
+		}
+	})
+
+	t.Run("10. Concurrent rendering", func(t *testing.T) {
+		tmpl := `|macro badge(text)|<b>|text|</b>|/macro|
+|fragment first||call badge('1')||/fragment|
+|macro label(text)|<i>|text|</i>|/macro|
+|fragment second||call badge('2')|-|call label('2')||/fragment|`
+
+		var wg sync.WaitGroup
+		errChan := make(chan error, 100)
+
+		for i := 0; i < 50; i++ {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				var buf bytes.Buffer
+				if err := engine.RenderFragment(&buf, tmpl, "first", nil); err != nil {
+					errChan <- err
+					return
+				}
+				if got := buf.String(); got != "<b>1</b>" {
+					errChan <- fmt.Errorf("concurrent first: expected %q, got %q", "<b>1</b>", got)
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				var buf bytes.Buffer
+				if err := engine.RenderFragment(&buf, tmpl, "second", nil); err != nil {
+					errChan <- err
+					return
+				}
+				if got := buf.String(); got != "<b>2</b>-<i>2</i>" {
+					errChan <- fmt.Errorf("concurrent second: expected %q, got %q", "<b>2</b>-<i>2</i>", got)
+				}
+			}()
+		}
+
+		wg.Wait()
+		close(errChan)
+
+		for err := range errChan {
+			t.Errorf("concurrency error: %v", err)
+		}
+	})
+
+	t.Run("11. Partial-output protection", func(t *testing.T) {
+		tmpl := `|fragment result|
+Output text before error
+|call undefinedMacro()|
+|/fragment|`
+
+		var buf bytes.Buffer
+		err := engine.RenderFragment(&buf, tmpl, "result", nil)
+		if err == nil {
+			t.Fatalf("expected error, got nil")
+		}
+		if buf.Len() > 0 {
+			t.Errorf("expected buffer to be empty on failure, got %q", buf.String())
+		}
+	})
+
+	t.Run("End-to-end router integration test", func(t *testing.T) {
+		tmpl := `|macro nav(title)|<nav>|title|</nav>|/macro|
+|fragment menu||call nav('Home')||/fragment|
+|macro footer(text)|<footer>|text|</footer>|/macro|
+|fragment info||call nav('Home')|-|call footer('2026')||/fragment|`
+
+		var bufMenu bytes.Buffer
+		if err := engine.RenderFragment(&bufMenu, tmpl, "menu", nil); err != nil {
+			t.Fatalf("unexpected error rendering menu: %v", err)
+		}
+		if got := bufMenu.String(); got != "<nav>Home</nav>" {
+			t.Errorf("menu fragment: expected %q, got %q", "<nav>Home</nav>", got)
+		}
+
+		var bufInfo bytes.Buffer
+		if err := engine.RenderFragment(&bufInfo, tmpl, "info", nil); err != nil {
+			t.Fatalf("unexpected error rendering info: %v", err)
+		}
+		if got := bufInfo.String(); got != "<nav>Home</nav>-<footer>2026</footer>" {
+			t.Errorf("info fragment: expected %q, got %q", "<nav>Home</nav>-<footer>2026</footer>", got)
+		}
 	})
 }

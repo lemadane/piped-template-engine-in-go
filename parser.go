@@ -188,6 +188,8 @@ func (parser *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopTo
 		switch token.Type {
 		case TokenText:
 			nodes = append(nodes, NewTextNode(token.Value))
+		case TokenRaw:
+			nodes = append(nodes, &RawNode{Content: token.Value})
 		case TokenComment:
 			// Ignore comments
 		case TokenExpression:
@@ -224,7 +226,7 @@ func (parser *Parser) parseBlockWithLoopDepthDirect(cursor *parserCursor, stopTo
 				return nil, fmt.Errorf("|break| outside a loop at %d", token.Position)
 			}
 			nodes = append(nodes, &BreakNode{Position: token.Position})
-		case TokenCase, TokenDefault:
+		case TokenCase, TokenDefault, TokenEndRaw:
 			return nil, fmt.Errorf("misplaced |%s| directive at position %d", token.Value, token.Position)
 		case TokenEndFor, TokenEndEach, TokenEndIf, TokenEndSection, TokenEndComponent, TokenEndSlot, TokenEndMacro, TokenEndFragment, TokenEndMinify, TokenEndAttempt, TokenEndSwitch, TokenEndSeparator:
 			return nil, fmt.Errorf("misplaced loop or block directive |%s| at %d", token.Value, token.Position)

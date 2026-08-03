@@ -346,6 +346,7 @@ func (node *EachNode) Render(context *Context, writer io.Writer) error {
 
 	items, isMap, totalItems := node.toIterable(rawValue)
 	executedAtLeastOnce := false
+	hasCommittedPreviousIter := false
 
 	if totalItems > 0 {
 		for itemIndex, item := range items {
@@ -365,7 +366,6 @@ func (node *EachNode) Render(context *Context, writer io.Writer) error {
 				loopScope[node.KeyName] = entryMap["key"]
 				loopScope[node.ValueName] = entryMap["value"]
 			} else if isMap {
-				// Map treated as list of entries if not explicit map loop
 				entryMap := item.(map[string]any)
 				loopScope[node.ItemName] = entryMap
 			} else {
@@ -374,28 +374,41 @@ func (node *EachNode) Render(context *Context, writer io.Writer) error {
 			loopScope["each"] = loopMetadata
 
 			subContext := context.SubContext(loopScope)
-			err := node.BodyBlock.Render(subContext, writer)
-			if errors.Is(err, errBreak) {
+
+			var iterBuf bytes.Buffer
+			bodyErr := node.BodyBlock.Render(subContext, &iterBuf)
+
+			if errors.Is(bodyErr, errBreak) {
 				break
 			}
-			if errors.Is(err, errContinue) {
+			if errors.Is(bodyErr, errContinue) {
 				continue
 			}
-			if err != nil {
-				return err
+			if bodyErr != nil {
+				return bodyErr
 			}
 
-			if node.SeparatorNode != nil && !isLastItem {
-				if err := node.SeparatorNode.Render(subContext, writer); err != nil {
-					if errors.Is(err, errBreak) {
-						break
+			if hasCommittedPreviousIter && node.SeparatorNode != nil {
+				var sepBuf bytes.Buffer
+				sepErr := node.SeparatorNode.Render(subContext, &sepBuf)
+				if errors.Is(sepErr, errBreak) {
+					break
+				}
+				if errors.Is(sepErr, errContinue) {
+					// suppress separator
+				} else if sepErr != nil {
+					return sepErr
+				} else {
+					if _, err := writer.Write(sepBuf.Bytes()); err != nil {
+						return err
 					}
-					if errors.Is(err, errContinue) {
-						continue
-					}
-					return err
 				}
 			}
+
+			if _, err := writer.Write(iterBuf.Bytes()); err != nil {
+				return err
+			}
+			hasCommittedPreviousIter = true
 		}
 	}
 
@@ -890,89 +903,81 @@ func (node *ForNode) Render(context *Context, writer io.Writer) error {
 		return fmt.Errorf("zero or negative step in for loop at %d: %d", node.Position, stepVal)
 	}
 
+	step := uint64(stepVal)
 	executedAtLeastOnce := false
+	hasCommittedPreviousIter := false
 
-	if startVal <= endVal {
-		currentVal := startVal
-		for {
-			executedAtLeastOnce = true
-			isLastStep := (endVal-currentVal < stepVal)
+	currentVal := startVal
+	isAscending := startVal <= endVal
 
-			loopScope := map[string]any{
-				node.VarName: currentVal,
-			}
-			subContext := context.SubContext(loopScope)
-			err := node.BodyBlock.Render(subContext, writer)
-			if errors.Is(err, errBreak) {
-				break
-			}
-			if errors.Is(err, errContinue) {
-				// skip body rest
-			} else if err != nil {
-				return err
-			}
+	for {
+		executedAtLeastOnce = true
 
-			if node.SeparatorNode != nil && !isLastStep {
-				if err := node.SeparatorNode.Render(subContext, writer); err != nil {
-					if errors.Is(err, errBreak) {
-						break
-					}
-					if errors.Is(err, errContinue) {
-						// proceed
-					} else {
-						return err
-					}
-				}
-			}
-
-			if isLastStep {
-				break
-			}
-			if endVal-currentVal < stepVal {
-				break
-			}
-			currentVal += stepVal
+		var distance uint64
+		if isAscending {
+			distance = uint64(endVal) - uint64(currentVal)
+		} else {
+			distance = uint64(currentVal) - uint64(endVal)
 		}
-	} else {
-		currentVal := startVal
-		for {
-			executedAtLeastOnce = true
-			isLastStep := (currentVal-endVal < stepVal)
 
-			loopScope := map[string]any{
-				node.VarName: currentVal,
-			}
-			subContext := context.SubContext(loopScope)
-			err := node.BodyBlock.Render(subContext, writer)
-			if errors.Is(err, errBreak) {
+		isLast := step > distance
+
+		loopScope := map[string]any{
+			node.VarName: currentVal,
+		}
+		subContext := context.SubContext(loopScope)
+
+		var iterBuf bytes.Buffer
+		bodyErr := node.BodyBlock.Render(subContext, &iterBuf)
+
+		if errors.Is(bodyErr, errBreak) {
+			break
+		}
+		if errors.Is(bodyErr, errContinue) {
+			if isLast {
 				break
 			}
-			if errors.Is(err, errContinue) {
-				// skip body rest
-			} else if err != nil {
-				return err
+			if isAscending {
+				currentVal += int64(step)
+			} else {
+				currentVal -= int64(step)
 			}
+			continue
+		}
+		if bodyErr != nil {
+			return bodyErr
+		}
 
-			if node.SeparatorNode != nil && !isLastStep {
-				if err := node.SeparatorNode.Render(subContext, writer); err != nil {
-					if errors.Is(err, errBreak) {
-						break
-					}
-					if errors.Is(err, errContinue) {
-						// proceed
-					} else {
-						return err
-					}
+		if hasCommittedPreviousIter && node.SeparatorNode != nil {
+			var sepBuf bytes.Buffer
+			sepErr := node.SeparatorNode.Render(subContext, &sepBuf)
+			if errors.Is(sepErr, errBreak) {
+				break
+			}
+			if errors.Is(sepErr, errContinue) {
+				// Suppress separator
+			} else if sepErr != nil {
+				return sepErr
+			} else {
+				if _, err := writer.Write(sepBuf.Bytes()); err != nil {
+					return err
 				}
 			}
+		}
 
-			if isLastStep {
-				break
-			}
-			if currentVal-endVal < stepVal {
-				break
-			}
-			currentVal -= stepVal
+		if _, err := writer.Write(iterBuf.Bytes()); err != nil {
+			return err
+		}
+		hasCommittedPreviousIter = true
+
+		if isLast {
+			break
+		}
+
+		if isAscending {
+			currentVal += int64(step)
+		} else {
+			currentVal -= int64(step)
 		}
 	}
 
